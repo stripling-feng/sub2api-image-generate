@@ -1,0 +1,95 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model ApiProfile {
+  id             String           @id @default(cuid())
+  baseUrl        String
+  keyHash        String           @unique
+  encryptedKey   String
+  defaultModel   String?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  sessions       ApiSession[]
+  generationJobs GenerationJob[]
+  templates      PromptTemplate[]
+
+  @@map("api_profiles")
+}
+
+model ApiSession {
+  id        String     @id @default(cuid())
+  tokenHash String     @unique
+  profileId String
+  expiresAt DateTime
+  createdAt DateTime   @default(now())
+  profile   ApiProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@index([profileId])
+  @@map("api_sessions")
+}
+
+model GenerationJob {
+  id           String           @id @default(cuid())
+  profileId    String
+  prompt       String
+  negativePrompt String?
+  model        String
+  size         String
+  quality      String?
+  style        String?
+  count        Int
+  responseFormat String
+  params       Json
+  status       JobStatus        @default(PENDING)
+  errorMessage String?
+  durationMs   Int?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+  profile      ApiProfile       @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  images       GeneratedImage[]
+
+  @@index([profileId, createdAt])
+  @@map("generation_jobs")
+}
+
+model GeneratedImage {
+  id        String        @id @default(cuid())
+  jobId     String
+  filePath  String
+  publicUrl String
+  mimeType  String
+  width     Int?
+  height    Int?
+  sizeBytes Int
+  createdAt DateTime      @default(now())
+  job       GenerationJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId])
+  @@map("generated_images")
+}
+
+model PromptTemplate {
+  id        String     @id @default(cuid())
+  profileId String
+  title     String
+  prompt    String
+  params    Json
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+  profile   ApiProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@index([profileId, updatedAt])
+  @@map("prompt_templates")
+}
+
+enum JobStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+}
