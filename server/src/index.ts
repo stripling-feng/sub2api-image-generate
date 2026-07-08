@@ -11,6 +11,8 @@ import { prisma } from "./db.js";
 import { decryptSecret, encryptSecret, hashSecret } from "./crypto.js";
 import { bindSchema, generateSchema, templateSchema } from "./schemas.js";
 import { createSession, requireSession, sessionCookie, type AuthedRequest } from "./session.js";
+import { errorDetails, logEvent } from "./logger.js";
+import { startImageRetentionCleanup } from "./imageRetention.js";
 import {
   callImageGeneration,
   callImageEdit,
@@ -22,18 +24,109 @@ import {
 
 const app = express();
 
+function withoutUndefined<T extends Record<string, unknown>>(value: T): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined && item !== null));
+}
+
+function buildOpenAIImageRequest(input: ReturnType<typeof generateSchema.parse>) {
+  return withoutUndefined({
+    model: input.model,
+    prompt: input.negativePrompt ? `${input.prompt}\n\nNegative prompt: ${input.negativePrompt}` : input.prompt,
+    size: input.size,
+    n: 1,
+    response_format: input.responseFormat,
+    quality: input.quality === "auto" ? undefined : input.quality,
+    output_format: input.outputFormat
+  });
+}
+
+function pickOpenAIImageRequest(params: Record<string, unknown>) {
+  return withoutUndefined({
+    model: params.model,
+    prompt: params.prompt,
+    size: params.size,
+    n: params.n,
+    response_format: params.response_format,
+    quality: params.quality,
+    output_format: params.output_format
+  });
+}
+
+function upstreamBaseUrl(profileBaseUrl: string) {
+  return config.upstreamBaseUrl ?? profileBaseUrl;
+}
+
+function isLocalUploadPath(filePath: string) {
+  const uploadRoot = path.resolve(config.uploadDir);
+  const resolvedPath = path.resolve(filePath);
+  return resolvedPath === uploadRoot || resolvedPath.startsWith(`${uploadRoot}${path.sep}`);
+}
+
+async function deleteGeneratedImageFiles(images: Array<{ filePath: string }>) {
+  const imageDirs = new Set<string>();
+
+  for (const image of images) {
+    if (!isLocalUploadPath(image.filePath)) continue;
+    imageDirs.add(path.dirname(path.resolve(image.filePath)));
+    await fs.unlink(image.filePath).catch(() => undefined);
+  }
+
+  for (const dir of imageDirs) {
+    await fs.rm(dir, { recursive: false, force: true }).catch(() => undefined);
+  }
+}
+
+function noStore(_req: Request, res: Response, next: NextFunction) {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.set("Pragma", "no-cache");
+  res.set("Expires", "0");
+  next();
+}
+
+function generationErrorMessage(error: unknown) {
+  const details = errorDetails(error);
+  const parts = [
+    error instanceof Error ? error.message : "Unknown generation error.",
+    details.status ? `HTTP ${details.status}` : "",
+    details.code ? `code ${details.code}` : "",
+    details.payload ? `payload ${JSON.stringify(details.payload).slice(0, 500)}` : ""
+  ].filter(Boolean);
+  return parts.join(" | ");
+}
+
+app.use((req, res, next) => {
+  const startedAt = Date.now();
+  res.on("finish", () => {
+    logEvent("http.request", {
+      method: req.method,
+      path: req.path,
+      status: res.statusCode,
+      durationMs: Date.now() - startedAt
+    });
+  });
+  next();
+});
+
 app.use(cors({ origin: config.clientOrigin, credentials: true }));
 app.use(express.json({ limit: "25mb" }));
 app.use(cookieParser());
 app.use("/uploads", express.static(config.uploadDir));
+app.use("/img", express.static(path.join(config.uploadDir, "images")));
+app.use("/api/images/history", noStore);
+app.use("/api/images/results", noStore);
 
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
 });
 
 app.post("/api/session/bind", async (req, res, next) => {
+  const startedAt = Date.now();
   try {
     const input = bindSchema.parse(req.body);
+    logEvent("session.bind.start", {
+      baseUrl: input.baseUrl,
+      apiKeyChars: input.apiKey.length
+    });
     const keyHash = hashSecret(input.apiKey);
     const profile = await prisma.apiProfile.upsert({
       where: { keyHash },
@@ -49,6 +142,12 @@ app.post("/api/session/bind", async (req, res, next) => {
     });
 
     await createSession(profile.id, res);
+    logEvent("session.bind.done", {
+      profileId: profile.id,
+      keyHashPreview: `${profile.keyHash.slice(0, 8)}...`,
+      upstreamOverride: Boolean(config.upstreamBaseUrl),
+      durationMs: Date.now() - startedAt
+    });
 
     res.json({
       profile: {
@@ -58,6 +157,10 @@ app.post("/api/session/bind", async (req, res, next) => {
       }
     });
   } catch (error) {
+    logEvent("session.bind.error", {
+      durationMs: Date.now() - startedAt,
+      ...errorDetails(error)
+    });
     next(error);
   }
 });
@@ -120,26 +223,62 @@ async function runGenerationJob(args: {
   referenceImages: Array<{ name: string; mimeType: string; data: string }>;
 }) {
   const startedAt = Date.now();
+  const requestId = typeof args.params.request_id === "string" ? args.params.request_id : undefined;
+  const upstreamParams = pickOpenAIImageRequest(args.params);
+  logEvent("generation.job.start", {
+    requestId,
+    jobId: args.job.id,
+    model: args.job.model,
+    size: args.job.size,
+    responseFormat: args.job.responseFormat,
+    referenceImageCount: args.referenceImages.length
+  });
 
   try {
+    logEvent("generation.job.gateway_call.start", {
+      requestId,
+      jobId: args.job.id,
+      mode: args.referenceImages.length ? "edit" : "generation"
+    });
     const result = args.referenceImages.length
       ? await callImageEdit({
-        baseUrl: args.profile.baseUrl,
+        baseUrl: upstreamBaseUrl(args.profile.baseUrl),
         apiKey: decryptSecret(args.profile.encryptedKey),
-        body: args.params,
-        images: args.referenceImages
+        body: upstreamParams,
+        images: args.referenceImages,
+        requestId
       })
       : await callImageGeneration({
-        baseUrl: args.profile.baseUrl,
+        baseUrl: upstreamBaseUrl(args.profile.baseUrl),
         apiKey: decryptSecret(args.profile.encryptedKey),
-        body: args.params
+        body: upstreamParams,
+        requestId
       });
+    logEvent("generation.job.gateway_call.done", {
+      requestId,
+      jobId: args.job.id,
+      durationMs: result.durationMs
+    });
     const items = extractImageItems(result.json);
+    logEvent("generation.job.images.extracted", {
+      requestId,
+      jobId: args.job.id,
+      itemCount: items.length,
+      b64Count: items.filter((item) => item.b64).length,
+      urlCount: items.filter((item) => item.url).length
+    });
     if (items.length === 0) {
       throw Object.assign(new Error("sub2api returned no images."), { payload: result.json });
     }
 
-    for (const item of items) {
+    for (const [index, item] of items.entries()) {
+      const persistStartedAt = Date.now();
+      logEvent("generation.job.image.persist.start", {
+        requestId,
+        jobId: args.job.id,
+        index: index + 1,
+        source: item.b64 ? "b64_json" : item.url ? "url" : "unknown"
+      });
       const file = item.b64
         ? await persistImageFromBase64(args.job.id, item.b64)
         : item.url
@@ -158,41 +297,98 @@ async function runGenerationJob(args: {
             sizeBytes: file.sizeBytes
           }
         });
+        logEvent("generation.job.image.persist.done", {
+          requestId,
+          jobId: args.job.id,
+          index: index + 1,
+          publicUrl: file.publicUrl,
+          mimeType: file.mimeType,
+          sizeBytes: file.sizeBytes,
+          width: file.width,
+          height: file.height,
+          durationMs: Date.now() - persistStartedAt
+        });
       }
     }
 
+    const totalDurationMs = Date.now() - startedAt;
+    const persistDurationMs = Math.max(0, totalDurationMs - result.durationMs);
     await prisma.generationJob.update({
       where: { id: args.job.id },
-      data: { status: "SUCCEEDED", durationMs: result.durationMs }
+      data: {
+        status: "SUCCEEDED",
+        durationMs: totalDurationMs,
+        params: {
+          ...args.params,
+          gateway_duration_ms: result.durationMs,
+          persist_duration_ms: persistDurationMs,
+          total_duration_ms: totalDurationMs
+        } as Prisma.InputJsonObject
+      }
+    });
+    logEvent("generation.job.succeeded", {
+      requestId,
+      jobId: args.job.id,
+      gatewayDurationMs: result.durationMs,
+      persistDurationMs,
+      totalDurationMs
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown generation error.";
+    const message = generationErrorMessage(error);
     await prisma.generationJob.update({
       where: { id: args.job.id },
-      data: { status: "FAILED", errorMessage: message, durationMs: Date.now() - startedAt }
+      data: {
+        status: "FAILED",
+        errorMessage: message,
+        durationMs: Date.now() - startedAt,
+        params: {
+          ...args.params,
+          failure: errorDetails(error)
+        } as Prisma.InputJsonObject
+      }
     }).catch(() => undefined);
+    logEvent("generation.job.failed", {
+      requestId,
+      jobId: args.job.id,
+      durationMs: Date.now() - startedAt,
+      ...errorDetails(error)
+    });
   }
 }
 
 app.post("/api/images/generate", requireSession, async (req, res, next) => {
+  const startedAt = Date.now();
   try {
     const profile = (req as AuthedRequest).profile;
     const input = generateSchema.parse(req.body);
     const requestId = nanoid(16);
-    const baseParams = {
+    logEvent("api.images.generate.accepted", {
+      requestId,
+      profileId: profile.id,
+      model: input.model,
+      size: input.size,
+      count: input.count,
+      responseFormat: input.responseFormat,
+      outputFormat: input.outputFormat,
+      referenceImageCount: input.referenceImages.length,
+      promptChars: input.prompt.length
+    });
+    const upstreamParams = buildOpenAIImageRequest(input);
+    const jobMetadata = withoutUndefined({
       ...input.extraParams,
       request_id: requestId,
-      model: input.model,
-      prompt: input.negativePrompt ? `${input.prompt}\n\nNegative prompt: ${input.negativePrompt}` : input.prompt,
-      size: input.size,
-      n: 1,
       response_format: input.responseFormat,
       output_format: input.outputFormat,
-      ...(input.aspectRatio ? { aspect_ratio: input.aspectRatio } : {}),
-      ...(input.customAspectRatio ? { custom_aspect_ratio: input.customAspectRatio } : {}),
-      ...(input.quality ? { quality: input.quality } : {}),
-      ...(input.style ? { style: input.style } : {})
-    };
+      aspect_ratio: input.aspectRatio,
+      custom_aspect_ratio: input.customAspectRatio,
+      size_tier: input.extraParams.size_tier,
+      custom_size_mode: input.extraParams.custom_size_mode,
+      custom_width: input.extraParams.custom_width,
+      custom_height: input.extraParams.custom_height,
+      reference_width: input.extraParams.reference_width,
+      reference_height: input.extraParams.reference_height,
+      computed_size: input.size
+    });
 
     void Promise.all(Array.from({ length: input.count }, async (_item, index) => {
       const job = await prisma.generationJob.create({
@@ -207,36 +403,119 @@ app.post("/api/images/generate", requireSession, async (req, res, next) => {
           count: 1,
           responseFormat: input.responseFormat,
           params: {
-            ...baseParams,
+            ...upstreamParams,
+            ...jobMetadata,
             request_index: index + 1,
             request_total: input.count
           } as Prisma.InputJsonObject,
           status: "PENDING"
         }
       });
+      logEvent("generation.job.created", {
+        requestId,
+        jobId: job.id,
+        index: index + 1,
+        total: input.count,
+        model: job.model,
+        size: job.size,
+        responseFormat: job.responseFormat
+      });
       const params = job.params as Record<string, unknown>;
       void runGenerationJob({ profile, job, params, referenceImages: input.referenceImages });
     })).catch((error) => {
-      console.error("Failed to enqueue generation jobs", error);
+      logEvent("generation.enqueue.failed", {
+        requestId,
+        ...errorDetails(error)
+      });
     });
 
+    logEvent("api.images.generate.response", {
+      requestId,
+      status: 202,
+      durationMs: Date.now() - startedAt
+    });
     res.status(202).json({ requestId, count: input.count });
   } catch (error) {
+    logEvent("api.images.generate.error", {
+      durationMs: Date.now() - startedAt,
+      ...errorDetails(error)
+    });
     next(error);
   }
 });
 
 app.get("/api/images/history", requireSession, async (req, res, next) => {
+  const startedAt = Date.now();
   try {
     const profile = (req as AuthedRequest).profile;
+    const page = Math.max(1, Math.floor(Number(req.query.page) || 1));
+    const pageSize = Math.min(50, Math.max(1, Math.floor(Number(req.query.pageSize) || 10)));
+    const where = { profileId: profile.id };
+    const [total, jobs] = await prisma.$transaction([
+      prisma.generationJob.count({ where }),
+      prisma.generationJob.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        include: { images: true }
+      })
+    ]);
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    logEvent("api.images.history", {
+      profileId: profile.id,
+      page,
+      pageSize,
+      total,
+      totalPages,
+      jobCount: jobs.length,
+      pendingCount: jobs.filter((job) => job.status === "PENDING").length,
+      failedCount: jobs.filter((job) => job.status === "FAILED").length,
+      succeededCount: jobs.filter((job) => job.status === "SUCCEEDED").length,
+      durationMs: Date.now() - startedAt
+    });
+    res.json({ jobs, page, pageSize, total, totalPages });
+  } catch (error) {
+    logEvent("api.images.history.error", {
+      durationMs: Date.now() - startedAt,
+      ...errorDetails(error)
+    });
+    next(error);
+  }
+});
+
+app.get("/api/images/results/:requestId", requireSession, async (req, res, next) => {
+  const startedAt = Date.now();
+  try {
+    const profile = (req as AuthedRequest).profile;
+    const requestId = req.params.requestId;
     const jobs = await prisma.generationJob.findMany({
-      where: { profileId: profile.id },
-      orderBy: { createdAt: "desc" },
-      take: 80,
+      where: {
+        profileId: profile.id,
+        params: {
+          path: ["request_id"],
+          equals: requestId
+        }
+      },
+      orderBy: { createdAt: "asc" },
       include: { images: true }
+    });
+    logEvent("api.images.results", {
+      requestId,
+      profileId: profile.id,
+      jobCount: jobs.length,
+      pendingCount: jobs.filter((job) => job.status === "PENDING").length,
+      failedCount: jobs.filter((job) => job.status === "FAILED").length,
+      succeededCount: jobs.filter((job) => job.status === "SUCCEEDED").length,
+      durationMs: Date.now() - startedAt
     });
     res.json({ jobs });
   } catch (error) {
+    logEvent("api.images.results.error", {
+      requestId: req.params.requestId,
+      durationMs: Date.now() - startedAt,
+      ...errorDetails(error)
+    });
     next(error);
   }
 });
@@ -251,9 +530,27 @@ app.delete("/api/images/:id", requireSession, async (req, res, next) => {
       res.status(404).json({ error: "Image not found." });
       return;
     }
-    await fs.unlink(image.filePath).catch(() => undefined);
+    await deleteGeneratedImageFiles([image]);
     await prisma.generatedImage.delete({ where: { id: image.id } });
     res.json({ ok: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/jobs", requireSession, async (req, res, next) => {
+  try {
+    const profile = (req as AuthedRequest).profile;
+    const jobs = await prisma.generationJob.findMany({
+      where: { profileId: profile.id },
+      include: { images: true }
+    });
+    const images = jobs.flatMap((job) => job.images);
+    await deleteGeneratedImageFiles(images);
+    const result = await prisma.generationJob.deleteMany({
+      where: { profileId: profile.id }
+    });
+    res.json({ ok: true, deletedCount: result.count });
   } catch (error) {
     next(error);
   }
@@ -270,10 +567,7 @@ app.delete("/api/jobs/:id", requireSession, async (req, res, next) => {
       res.status(404).json({ error: "Job not found." });
       return;
     }
-    for (const image of job.images) {
-      await fs.unlink(image.filePath).catch(() => undefined);
-    }
-    await fs.rm(path.join(config.uploadDir, "images", job.id), { recursive: true, force: true }).catch(() => undefined);
+    await deleteGeneratedImageFiles(job.images);
     await prisma.generationJob.delete({ where: { id: job.id } });
     res.json({ ok: true });
   } catch (error) {
@@ -351,6 +645,7 @@ app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
 });
 
 await fs.mkdir(path.join(config.uploadDir, "images"), { recursive: true });
+startImageRetentionCleanup();
 
 app.listen(config.port, () => {
   console.log(`sub2api image workbench API listening on http://localhost:${config.port}`);

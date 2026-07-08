@@ -1,3 +1,8 @@
+type ApiErrorDetail = {
+  path?: unknown[];
+  message?: string;
+};
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const apiKey = localStorage.getItem("apiKey") ?? "";
   const response = await fetch(path, {
@@ -12,7 +17,17 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
   const json = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const message = typeof json.error === "string" ? json.error : `HTTP ${response.status}`;
+    const details = Array.isArray(json.details)
+      ? json.details
+        .map((item: ApiErrorDetail) => {
+          const path = Array.isArray(item?.path) ? item.path.join(".") : "";
+          const message = typeof item?.message === "string" ? item.message : "";
+          return [path, message].filter(Boolean).join(": ");
+        })
+        .filter(Boolean)
+        .join("; ")
+      : "";
+    const message = details || (typeof json.error === "string" ? json.error : `HTTP ${response.status}`);
     throw new Error(message);
   }
   return json as T;

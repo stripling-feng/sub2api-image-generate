@@ -6,13 +6,15 @@ dotenv.config();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const serverRoot = path.resolve(__dirname, "..");
+const isProduction = process.env.NODE_ENV === "production";
 
 export const config = {
   port: Number(process.env.PORT ?? 3000),
   clientOrigin: process.env.CLIENT_ORIGIN ?? "http://localhost:5173",
   encryptionSecret: process.env.ENCRYPTION_SECRET ?? "",
   uploadDir: path.resolve(serverRoot, process.env.UPLOAD_DIR ?? "./uploads"),
-  sessionDays: Number(process.env.SESSION_DAYS ?? 30)
+  sessionDays: Number(process.env.SESSION_DAYS ?? 30),
+  upstreamBaseUrl: process.env.UPSTREAM_BASE_URL?.trim() || (isProduction ? "http://127.0.0.1:8080" : undefined)
 };
 
 if (config.encryptionSecret.length < 32) {

@@ -12,7 +12,7 @@ type GeneratePayload = {
   quality?: string;
   outputFormat?: "png" | "jpeg" | "webp";
   count: number;
-  responseFormat: "url";
+  responseFormat: "b64_json" | "url";
   extraParams: Record<string, unknown>;
   referenceImages?: Array<{
     name: string;
@@ -21,7 +21,7 @@ type GeneratePayload = {
   }>;
 };
 
-let historyPollTimer: number | undefined;
+let resultPollTimer: number | undefined;
 const pendingDeletedJobIds = new Set<string>();
 const pendingDeletedImageIds = new Set<string>();
 const pendingDeletedRequestIds = new Set<string>();
@@ -29,6 +29,7 @@ const mockJobPrefix = "mock-job-";
 const mockImagePrefix = "mock-image-";
 const localJobPrefix = "local-job-";
 const localRequestPrefix = "local-request-";
+const defaultHistoryPageSize = 10;
 
 function isMockId(id: string) {
   return id.startsWith(mockJobPrefix) || id.startsWith(mockImagePrefix) || id.startsWith(localJobPrefix);
@@ -76,11 +77,66 @@ function createLocalRequestId() {
   return `${localRequestPrefix}${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function logWorkbench(event: string, details: Record<string, unknown> = {}) {
+  if (!import.meta.env.DEV) return;
+  console.log(`[workbench] ${event}`, {
+    at: new Date().toISOString(),
+    ...details
+  });
+}
+
+function jobRequestId(job: GenerationJob): string | undefined {
+  return typeof job.params.request_id === "string" ? job.params.request_id : undefined;
+}
+
+function jobRequestIndex(job: GenerationJob): number | undefined {
+  return typeof job.params.request_index === "number" ? job.params.request_index : undefined;
+}
+
+function pendingRequestIds(jobs: GenerationJob[]) {
+  return [...new Set(jobs.flatMap((job) => {
+    const requestId = jobRequestId(job);
+    return requestId && job.status === "PENDING" && !pendingDeletedRequestIds.has(requestId)
+      ? [requestId]
+      : [];
+  }))];
+}
+
+function latestRequestIdForResults(jobs: GenerationJob[]) {
+  const pendingJob = jobs.find((job) => job.status === "PENDING" && jobRequestId(job));
+  return pendingJob ? jobRequestId(pendingJob) : undefined;
+}
+
+function mergeRequestJobs(currentJobs: GenerationJob[], remoteJobs: GenerationJob[], requestId: string) {
+  const remoteIndexes = new Set(remoteJobs.map(jobRequestIndex).filter((index): index is number => index != null));
+  const remoteIds = new Set(remoteJobs.map((job) => job.id));
+  const preservedLocalPendingJobs = currentJobs.filter((job) => {
+    if (!job.id.startsWith(localJobPrefix) || jobRequestId(job) !== requestId || job.status !== "PENDING") return false;
+    const requestIndex = jobRequestIndex(job);
+    return requestIndex == null || !remoteIndexes.has(requestIndex);
+  });
+
+  return [
+    ...remoteJobs,
+    ...preservedLocalPendingJobs,
+    ...currentJobs.filter((job) => {
+      if (remoteIds.has(job.id)) return false;
+      if (preservedLocalPendingJobs.some((pendingJob) => pendingJob.id === job.id)) return false;
+      return jobRequestId(job) !== requestId;
+    })
+  ];
+}
+
 export const useWorkbenchStore = defineStore("workbench", {
   state: () => ({
     profile: null as Profile | null,
     jobs: [] as GenerationJob[],
     templates: [] as PromptTemplate[],
+    historyPage: 1,
+    historyPageSize: defaultHistoryPageSize,
+    historyTotal: 0,
+    historyTotalPages: 1,
+    historyLoading: false,
     currentRequestId: "",
     loading: false,
     status: "",
@@ -88,15 +144,19 @@ export const useWorkbenchStore = defineStore("workbench", {
   }),
   actions: {
     resetWorkspace() {
-      if (historyPollTimer) {
-        window.clearInterval(historyPollTimer);
-        historyPollTimer = undefined;
+      if (resultPollTimer) {
+        window.clearInterval(resultPollTimer);
+        resultPollTimer = undefined;
       }
       pendingDeletedJobIds.clear();
       pendingDeletedImageIds.clear();
       pendingDeletedRequestIds.clear();
       this.jobs = [];
       this.templates = [];
+      this.historyPage = 1;
+      this.historyTotal = 0;
+      this.historyTotalPages = 1;
+      this.historyLoading = false;
       this.currentRequestId = "";
       this.error = "";
       this.status = "";
@@ -122,7 +182,20 @@ export const useWorkbenchStore = defineStore("workbench", {
     async generate(payload: GeneratePayload) {
       this.loading = true;
       this.error = "";
+      const startedAt = Date.now();
+      const safeCount = Math.max(1, Math.min(10, Number(payload.count) || 1));
+      payload = { ...payload, count: safeCount };
       const optimisticRequestId = createLocalRequestId();
+      logWorkbench("generate.start", {
+        optimisticRequestId,
+        model: payload.model,
+        size: payload.size,
+        count: payload.count,
+        responseFormat: payload.responseFormat,
+        outputFormat: payload.outputFormat,
+        referenceImageCount: payload.referenceImages?.length ?? 0,
+        promptChars: payload.prompt.length
+      });
       const optimisticJobs = createLocalPendingJobs(payload, optimisticRequestId, payload.count);
       this.currentRequestId = optimisticRequestId;
       this.jobs = [
@@ -131,6 +204,12 @@ export const useWorkbenchStore = defineStore("workbench", {
       ];
       try {
         const data = await api.post<{ requestId?: string; count?: number; jobs?: GenerationJob[]; job?: GenerationJob }>("/api/images/generate", payload);
+        logWorkbench("generate.accepted", {
+          optimisticRequestId,
+          requestId: data.requestId,
+          count: data.count ?? payload.count,
+          durationMs: Date.now() - startedAt
+        });
         if (data.requestId) {
           this.currentRequestId = data.requestId;
         }
@@ -142,57 +221,138 @@ export const useWorkbenchStore = defineStore("workbench", {
           ...jobs,
           ...this.jobs.filter((job) => job.params.request_id !== optimisticRequestId && !incomingIds.has(job.id))
         ];
-        this.startHistoryPolling();
+        this.startResultPolling();
       } catch (error) {
+        logWorkbench("generate.error", {
+          optimisticRequestId,
+          durationMs: Date.now() - startedAt,
+          message: error instanceof Error ? error.message : String(error)
+        });
         this.error = error instanceof Error ? error.message : "生成失败";
         await this.loadHistory().catch(() => undefined);
       } finally {
+        logWorkbench("generate.done", {
+          optimisticRequestId,
+          durationMs: Date.now() - startedAt
+        });
         this.loading = false;
       }
     },
-    startHistoryPolling() {
-      if (historyPollTimer) {
-        window.clearInterval(historyPollTimer);
-      }
+    startResultPolling() {
+      if (resultPollTimer) return;
 
-      historyPollTimer = window.setInterval(async () => {
-        const hasPending = this.jobs.some((job) => job.status === "PENDING");
-        if (!hasPending) {
-          if (historyPollTimer) {
-            window.clearInterval(historyPollTimer);
-            historyPollTimer = undefined;
+      logWorkbench("results.poll.start", {
+        currentRequestId: this.currentRequestId,
+        requestIds: pendingRequestIds(this.jobs)
+      });
+      resultPollTimer = window.setInterval(async () => {
+        const requestIds = pendingRequestIds(this.jobs);
+        if (!requestIds.length) {
+          if (resultPollTimer) {
+            window.clearInterval(resultPollTimer);
+            resultPollTimer = undefined;
           }
+          logWorkbench("results.poll.stop", {
+            currentRequestId: this.currentRequestId,
+            jobCount: this.jobs.length
+          });
           return;
         }
 
-        await this.loadHistory().catch(() => undefined);
+        await Promise.all(requestIds.map((requestId) => this.loadCurrentResults(requestId).catch(() => undefined)));
       }, 2000);
     },
-    async loadHistory() {
-      const data = await api.get<{ jobs: GenerationJob[] }>("/api/images/history");
+    async loadHistory(page?: number) {
+      const startedAt = Date.now();
+      const targetPage = Math.max(1, Math.floor(Number(page ?? this.historyPage) || 1));
+      const targetPageSize = this.historyPageSize;
+      this.historyLoading = true;
+      logWorkbench("history.load.start", {
+        currentRequestId: this.currentRequestId,
+        page: targetPage,
+        pageSize: targetPageSize
+      });
+      try {
+        const data = await api.get<{
+          jobs: GenerationJob[];
+          page: number;
+          pageSize: number;
+          total: number;
+          totalPages: number;
+        }>(`/api/images/history?page=${targetPage}&pageSize=${targetPageSize}`);
+        const remoteJobs = data.jobs
+          .map(normalizeJob)
+          .filter((job) => {
+            const requestId = jobRequestId(job);
+            return !pendingDeletedJobIds.has(job.id) && (!requestId || !pendingDeletedRequestIds.has(requestId));
+          })
+          .map((job) => ({
+            ...job,
+            images: (job.images ?? []).filter((image) => !pendingDeletedImageIds.has(image.id))
+          }));
+        const remoteRequestIds = new Set(remoteJobs.flatMap((job) => {
+          const requestId = jobRequestId(job);
+          return requestId ? [requestId] : [];
+        }));
+        const localJobs = this.jobs.filter((job) => {
+          if (!job.id.startsWith(localJobPrefix)) return false;
+          const requestId = jobRequestId(job);
+          return targetPage === 1 && requestId && !remoteRequestIds.has(requestId) && !pendingDeletedJobIds.has(job.id);
+        });
+        this.historyPage = data.page;
+        this.historyPageSize = data.pageSize;
+        this.historyTotal = data.total;
+        this.historyTotalPages = data.totalPages;
+        this.jobs = [...localJobs, ...remoteJobs];
+        if (!this.currentRequestId) {
+          this.currentRequestId = latestRequestIdForResults(this.jobs) ?? "";
+        }
+        if (pendingRequestIds(this.jobs).length) {
+          this.startResultPolling();
+        }
+        logWorkbench("history.load.done", {
+          currentRequestId: this.currentRequestId,
+          page: this.historyPage,
+          pageSize: this.historyPageSize,
+          total: this.historyTotal,
+          totalPages: this.historyTotalPages,
+          remoteCount: remoteJobs.length,
+          localPendingCount: localJobs.length,
+          pendingCount: this.jobs.filter((job) => job.status === "PENDING").length,
+          failedCount: this.jobs.filter((job) => job.status === "FAILED").length,
+          succeededCount: this.jobs.filter((job) => job.status === "SUCCEEDED").length,
+          durationMs: Date.now() - startedAt
+        });
+      } finally {
+        this.historyLoading = false;
+      }
+
+    },
+    async loadCurrentResults(requestId?: string) {
+      const targetRequestId = requestId || this.currentRequestId;
+      if (!targetRequestId) return;
+      const startedAt = Date.now();
+      logWorkbench("results.load.start", { requestId: targetRequestId });
+      const data = await api.get<{ jobs: GenerationJob[] }>(`/api/images/results/${encodeURIComponent(targetRequestId)}`);
       const remoteJobs = data.jobs
         .map(normalizeJob)
-        .filter((job) => {
-          const requestId = typeof job.params.request_id === "string" ? job.params.request_id : undefined;
-          return !pendingDeletedJobIds.has(job.id) && (!requestId || !pendingDeletedRequestIds.has(requestId));
-        })
+        .filter((job) => !pendingDeletedJobIds.has(job.id))
         .map((job) => ({
           ...job,
           images: (job.images ?? []).filter((image) => !pendingDeletedImageIds.has(image.id))
         }));
-      const remoteRequestIds = new Set(remoteJobs.flatMap((job) => {
-        const requestId = typeof job.params.request_id === "string" ? job.params.request_id : undefined;
-        return requestId ? [requestId] : [];
-      }));
-      const localJobs = this.jobs.filter((job) => {
-        if (!job.id.startsWith(localJobPrefix)) return false;
-        const requestId = typeof job.params.request_id === "string" ? job.params.request_id : undefined;
-        return requestId && !remoteRequestIds.has(requestId) && !pendingDeletedJobIds.has(job.id);
+      this.jobs = mergeRequestJobs(this.jobs, remoteJobs, targetRequestId);
+      logWorkbench("results.load.done", {
+        requestId: targetRequestId,
+        remoteCount: remoteJobs.length,
+        pendingCount: remoteJobs.filter((job) => job.status === "PENDING").length,
+        failedCount: remoteJobs.filter((job) => job.status === "FAILED").length,
+        succeededCount: remoteJobs.filter((job) => job.status === "SUCCEEDED").length,
+        durationMs: Date.now() - startedAt
       });
-      this.jobs = [...localJobs, ...remoteJobs];
 
-      if (this.jobs.some((job) => job.status === "PENDING") && !historyPollTimer) {
-        this.startHistoryPolling();
+      if (pendingRequestIds(this.jobs).length) {
+        this.startResultPolling();
       }
     },
     async deleteImage(id: string) {
@@ -224,7 +384,7 @@ export const useWorkbenchStore = defineStore("workbench", {
       pendingDeletedJobIds.add(id);
       const previousJobs = this.jobs;
       const targetJob = this.jobs.find((job) => job.id === id);
-      const requestId = typeof targetJob?.params.request_id === "string" ? targetJob.params.request_id : undefined;
+      const requestId = targetJob ? jobRequestId(targetJob) : undefined;
       if (id.startsWith(localJobPrefix) && requestId) {
         pendingDeletedRequestIds.add(requestId);
       }
@@ -243,6 +403,43 @@ export const useWorkbenchStore = defineStore("workbench", {
           this.error = error instanceof Error ? error.message : "删除失败";
           await this.loadHistory().catch(() => undefined);
         });
+    },
+    async deleteAllJobs() {
+      const previousJobs = this.jobs;
+      const previousCurrentRequestId = this.currentRequestId;
+      const previousHistoryPage = this.historyPage;
+      const previousHistoryTotal = this.historyTotal;
+      const previousHistoryTotalPages = this.historyTotalPages;
+
+      if (resultPollTimer) {
+        window.clearInterval(resultPollTimer);
+        resultPollTimer = undefined;
+      }
+
+      this.jobs = [];
+      this.currentRequestId = "";
+      this.historyPage = 1;
+      this.historyTotal = 0;
+      this.historyTotalPages = 1;
+      this.error = "";
+
+      try {
+        await api.delete<{ ok: boolean; deletedCount: number }>("/api/jobs");
+        pendingDeletedJobIds.clear();
+        pendingDeletedImageIds.clear();
+        pendingDeletedRequestIds.clear();
+      } catch (error) {
+        this.jobs = previousJobs;
+        this.currentRequestId = previousCurrentRequestId;
+        this.historyPage = previousHistoryPage;
+        this.historyTotal = previousHistoryTotal;
+        this.historyTotalPages = previousHistoryTotalPages;
+        this.error = error instanceof Error ? error.message : "删除失败";
+        if (pendingRequestIds(this.jobs).length) {
+          this.startResultPolling();
+        }
+        throw error;
+      }
     },
     async loadTemplates() {
       const data = await api.get<{ templates: PromptTemplate[] }>("/api/templates");
