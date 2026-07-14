@@ -49,12 +49,32 @@ model GenerationJob {
   status       JobStatus        @default(PENDING)
   errorMessage String?
   durationMs   Int?
+  upstreamTaskId String?
+  upstreamOperation String?
+  upstreamStatus String?
+  progress     Int              @default(0)
+  nextPollAt  DateTime?
+  pollErrorCount Int            @default(0)
+  pollLeaseUntil DateTime?
+  completedAt DateTime?
+  billingStatus String?
+  billingAmount Decimal?        @db.Decimal(20, 10)
+  billingApiKeyId String?
+  billingUserId String?
+  billingAccountId String?
+  billingUsageLogId String?
+  billingReservedAt DateTime?
+  billingSettledAt DateTime?
+  billingError String?
   createdAt    DateTime         @default(now())
   updatedAt    DateTime         @updatedAt
   profile      ApiProfile       @relation(fields: [profileId], references: [id], onDelete: Cascade)
   images       GeneratedImage[]
 
   @@index([profileId, createdAt])
+  @@index([status, nextPollAt])
+  @@index([upstreamTaskId])
+  @@index([billingStatus, createdAt])
   @@map("generation_jobs")
 }
 
@@ -67,10 +87,12 @@ model GeneratedImage {
   width     Int?
   height    Int?
   sizeBytes Int
+  sourceIndex Int?
   createdAt DateTime      @default(now())
   job       GenerationJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
 
   @@index([jobId])
+  @@unique([jobId, sourceIndex])
   @@map("generated_images")
 }
 

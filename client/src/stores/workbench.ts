@@ -17,8 +17,9 @@ type GeneratePayload = {
   referenceImages?: Array<{
     name: string;
     mimeType: string;
-    data: string;
+    file: File;
   }>;
+  mask?: { name: string; mimeType: "image/png"; file: File };
 };
 
 let resultPollTimer: number | undefined;
@@ -46,31 +47,32 @@ function createLocalPendingJobs(payload: GeneratePayload, requestId: string, cou
   const now = new Date().toISOString();
   const total = Math.max(1, Math.min(10, Number(count) || 1));
 
-  return Array.from({ length: total }, (_item, index) => ({
-    id: `${localJobPrefix}${requestId}-${index + 1}`,
+  return [{
+    id: `${localJobPrefix}${requestId}`,
     prompt: payload.prompt,
     negativePrompt: payload.negativePrompt ?? null,
     model: payload.model,
     size: payload.size,
     quality: payload.quality ?? null,
     style: null,
-    count: 1,
+    count: total,
     responseFormat: payload.responseFormat,
     params: {
       ...payload.extraParams,
       request_id: requestId,
-      request_index: index + 1,
-      request_total: total,
+      request_index: 1,
+      request_total: 1,
       output_format: payload.outputFormat,
       aspect_ratio: payload.aspectRatio,
       custom_aspect_ratio: payload.customAspectRatio
     },
     status: "PENDING",
+    progress: 0,
     errorMessage: null,
     durationMs: null,
     createdAt: now,
     images: []
-  }));
+  }];
 }
 
 function createLocalRequestId() {
@@ -203,7 +205,20 @@ export const useWorkbenchStore = defineStore("workbench", {
         ...this.jobs.filter((job) => job.params.request_id !== optimisticRequestId)
       ];
       try {
-        const data = await api.post<{ requestId?: string; count?: number; jobs?: GenerationJob[]; job?: GenerationJob }>("/api/images/generate", payload);
+        const referenceImages = payload.referenceImages ?? [];
+        const hasFiles = referenceImages.length > 0 || Boolean(payload.mask);
+        let data: { requestId?: string; count?: number; jobs?: GenerationJob[]; job?: GenerationJob };
+        if (hasFiles) {
+          const form = new FormData();
+          const { referenceImages: _referenceImages, mask: _mask, ...jsonPayload } = payload;
+          form.append("payload", JSON.stringify({ ...jsonPayload, referenceImages: [] }));
+          const imageField = referenceImages.length === 1 ? "image" : "image[]";
+          referenceImages.forEach((image) => form.append(imageField, image.file, image.name));
+          if (payload.mask) form.append("mask", payload.mask.file, payload.mask.name);
+          data = await api.postForm("/api/images/generate", form);
+        } else {
+          data = await api.post("/api/images/generate", payload);
+        }
         logWorkbench("generate.accepted", {
           optimisticRequestId,
           requestId: data.requestId,

@@ -7,7 +7,7 @@ import type { GeneratedImage, GenerationJob } from "./types";
 type ReferenceImage = {
   name: string;
   mimeType: string;
-  data: string;
+  file: File;
   previewUrl: string;
   width: number;
   height: number;
@@ -81,6 +81,7 @@ const form = reactive({
 
 const autoBindTimer = ref<number | undefined>();
 const referenceImages = ref<ReferenceImage[]>([]);
+const maskImage = ref<ReferenceImage | null>(null);
 const isReferenceDragging = ref(false);
 const showApiKey = ref(false);
 const docDialogOpen = ref(false);
@@ -112,15 +113,15 @@ const latestImages = computed(() => currentResultJobs.value.flatMap((job) => {
   }
 
   if (job.status === "PENDING") {
-    return [{
-      id: `pending-${job.id}`,
+    return Array.from({ length: Math.max(1, job.count) }, (_item, index) => ({
+      id: `pending-${job.id}-${index}`,
       jobId: job.id,
       publicUrl: "",
       mimeType: "application/x-pending",
       sizeBytes: 0,
       createdAt: job.createdAt,
       job
-    }];
+    }));
   }
 
   if (job.status === "FAILED") {
@@ -191,6 +192,7 @@ const upstreamSize = computed(() => {
 });
 
 const upstreamResponseFormat = computed<"b64_json" | "url">(() => form.model === "gpt-image-2-4k" ? "url" : "b64_json");
+const estimatedChargeUsd = computed(() => (Math.max(1, Math.min(10, Number(form.count) || 1)) * 0.5).toFixed(2));
 
 function normalizeSize(inputWidth: number, inputHeight: number, ratioValue: number, pixelLimit = maxPixels) {
   let width = Math.round(inputWidth);
@@ -347,6 +349,8 @@ onUnmounted(() => {
     window.clearInterval(historyClockTimer);
     historyClockTimer = undefined;
   }
+  referenceImages.value.forEach((image) => URL.revokeObjectURL(image.previewUrl));
+  if (maskImage.value) URL.revokeObjectURL(maskImage.value.previewUrl);
 });
 
 watch(
@@ -403,26 +407,21 @@ watch(
 
 function fileToReferenceImage(file: File): Promise<ReferenceImage> {
   return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error("图片读取失败"));
-    reader.onload = () => {
-      const result = String(reader.result);
-      const data = result.split(",")[1] ?? "";
-      const image = new Image();
-      image.onerror = () => reject(new Error("图片尺寸读取失败"));
-      image.onload = () => {
-        resolve({
-          name: file.name,
-          mimeType: file.type || "image/png",
-          data,
-          previewUrl: result,
-          width: image.naturalWidth,
-          height: image.naturalHeight
-        });
-      };
-      image.src = result;
+    const previewUrl = URL.createObjectURL(file);
+    const image = new Image();
+    image.onerror = () => {
+      URL.revokeObjectURL(previewUrl);
+      reject(new Error("图片尺寸读取失败"));
     };
-    reader.readAsDataURL(file);
+    image.onload = () => resolve({
+      name: file.name,
+      mimeType: file.type || "image/png",
+      file,
+      previewUrl,
+      width: image.naturalWidth,
+      height: image.naturalHeight
+    });
+    image.src = previewUrl;
   });
 }
 
@@ -438,15 +437,17 @@ async function urlToReferenceImage(url: string, name: string, fallbackMimeType?:
 }
 
 function addReferenceImages(images: ReferenceImage[]) {
-  const remaining = Math.max(0, 4 - referenceImages.value.length);
-  referenceImages.value = [...referenceImages.value, ...images.slice(0, remaining)];
+  const remaining = Math.max(0, 10 - referenceImages.value.length);
+  const accepted = images.slice(0, remaining);
+  images.slice(remaining).forEach((image) => URL.revokeObjectURL(image.previewUrl));
+  referenceImages.value = [...referenceImages.value, ...accepted];
 }
 
 async function handleReferenceUpload(event: Event) {
   const input = event.target as HTMLInputElement;
   const files = Array.from(input.files ?? []);
   const validFiles = files.filter((file) => file.type.startsWith("image/") && file.size <= maxReferenceImageBytes);
-  const remaining = Math.max(0, 4 - referenceImages.value.length);
+  const remaining = Math.max(0, 10 - referenceImages.value.length);
   const selected = validFiles.slice(0, remaining);
   const images = await Promise.all(selected.map(fileToReferenceImage));
   addReferenceImages(images);
@@ -489,12 +490,12 @@ function handleReferenceDragLeave(event: DragEvent) {
 async function handleReferenceDrop(event: DragEvent) {
   event.preventDefault();
   isReferenceDragging.value = false;
-  if (!event.dataTransfer || referenceImages.value.length >= 4) return;
+  if (!event.dataTransfer || referenceImages.value.length >= 10) return;
 
   const droppedFiles = Array.from(event.dataTransfer.files ?? [])
     .filter((file) => file.type.startsWith("image/") && file.size <= maxReferenceImageBytes);
   if (droppedFiles.length) {
-    const remaining = Math.max(0, 4 - referenceImages.value.length);
+    const remaining = Math.max(0, 10 - referenceImages.value.length);
     const selected = droppedFiles.slice(0, remaining);
     const images = await Promise.all(selected.map(fileToReferenceImage));
     addReferenceImages(images);
@@ -525,7 +526,44 @@ async function handleReferenceDrop(event: DragEvent) {
 }
 
 function removeReferenceImage(index: number) {
+  const removed = referenceImages.value[index];
+  if (removed) URL.revokeObjectURL(removed.previewUrl);
   referenceImages.value = referenceImages.value.filter((_, itemIndex) => itemIndex !== index);
+  if (index === 0 && maskImage.value) removeMaskImage();
+}
+
+async function handleMaskUpload(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file) return;
+  if (file.type !== "image/png" || !file.name.toLowerCase().endsWith(".png")) {
+    store.error = "蒙版仅支持 PNG 格式";
+    return;
+  }
+  if (file.size > maxReferenceImageBytes) {
+    store.error = "蒙版不能超过 10MB";
+    return;
+  }
+  const firstReference = referenceImages.value[0];
+  if (!firstReference) {
+    store.error = "请先上传第一张参考图，再添加蒙版";
+    return;
+  }
+  const image = await fileToReferenceImage(file);
+  if (image.width !== firstReference.width || image.height !== firstReference.height) {
+    URL.revokeObjectURL(image.previewUrl);
+    store.error = "蒙版尺寸必须与第一张参考图一致";
+    return;
+  }
+  if (maskImage.value) URL.revokeObjectURL(maskImage.value.previewUrl);
+  maskImage.value = image;
+  store.error = "";
+}
+
+function removeMaskImage() {
+  if (maskImage.value) URL.revokeObjectURL(maskImage.value.previewUrl);
+  maskImage.value = null;
 }
 
 function showNotice(title: string, message: string) {
@@ -569,8 +607,8 @@ async function generate() {
     size: upstreamSize.value || "auto",
     aspectRatio: form.aspectRatio,
     count: form.count,
-    quality: form.quality === "auto" ? undefined : form.quality,
-    outputFormat: form.outputFormat,
+    quality: form.model === "gpt-image-2" || form.quality === "auto" ? undefined : form.quality,
+    outputFormat: form.model === "gpt-image-2" ? undefined : form.outputFormat,
     responseFormat: upstreamResponseFormat.value,
     extraParams: {
       size_tier: modelSizeTier[form.model],
@@ -578,7 +616,10 @@ async function generate() {
       upstream_size: upstreamSize.value || "auto",
       computed_size: computedSize.value || "auto"
     },
-    referenceImages: referenceImages.value.map(({ name, mimeType, data }) => ({ name, mimeType, data }))
+    referenceImages: referenceImages.value.map(({ name, mimeType, file }) => ({ name, mimeType, file })),
+    mask: form.model === "gpt-image-2" && maskImage.value
+      ? { name: maskImage.value.name, mimeType: "image/png", file: maskImage.value.file }
+      : undefined
   });
 }
 
@@ -735,6 +776,9 @@ async function copyText(text: string) {
               </button>
             </span>
           </label>
+          <p v-if="store.profile?.availableBalanceUsd" class="muted">
+            sub2api 可用余额：${{ Number(store.profile.availableBalanceUsd).toFixed(2) }}
+          </p>
         </section>
 
         <section class="panel-section">
@@ -762,7 +806,7 @@ async function copyText(text: string) {
               <option value="16:9">16:9</option>
             </select>
           </label>
-          <div class="split">
+          <div v-if="form.model === 'gpt-image-2-4k'" class="split">
             <label>
               <span>质量</span>
               <select v-model="form.quality">
@@ -780,11 +824,13 @@ async function copyText(text: string) {
                 <option value="webp">WEBP</option>
               </select>
             </label>
-            <label>
-              <span>数量</span>
-              <input v-model.number="form.count" type="number" min="1" max="10" @change="form.count = Math.max(1, Math.min(10, Number(form.count) || 1))" />
-            </label>
           </div>
+          <div v-else class="model-format-hint">质量与输出格式由上游结果决定。</div>
+          <label>
+            <span>数量</span>
+            <input v-model.number="form.count" type="number" min="1" max="10" @change="form.count = Math.max(1, Math.min(10, Number(form.count) || 1))" />
+          </label>
+          <p v-if="form.model === 'gpt-image-2'" class="muted">预计扣费：${{ estimatedChargeUsd }}（每张 $0.50，失败不扣费）</p>
         </section>
       </aside>
 
@@ -817,7 +863,7 @@ async function copyText(text: string) {
                 </div>
                 <div class="generation-loader-copy">
                   <strong>正在生成图像</strong>
-                  <span>已等待 {{ durationLabel(item.job) }}</span>
+                  <span>已等待 {{ durationLabel(item.job) }}<template v-if="item.job.progress"> · {{ item.job.progress }}%</template></span>
                 </div>
                 <div class="generation-loader-corners" aria-hidden="true">
                   <span></span>
@@ -871,9 +917,14 @@ async function copyText(text: string) {
                 上传参考图
                 <input type="file" accept="image/*" multiple @change="handleReferenceUpload" />
               </label>
+              <label v-if="form.model === 'gpt-image-2'" class="upload-button" :class="{ disabled: !referenceImages.length }">
+                <ImagePlus :size="17" />
+                上传 PNG 蒙版
+                <input type="file" accept="image/png,.png" :disabled="!referenceImages.length" @change="handleMaskUpload" />
+              </label>
               <span class="muted">可从右侧历史拖入</span>
             </div>
-            <span class="muted">最多 4 张，每张不超过 10MB。</span>
+            <span class="muted">参考图最多 10 张，每张不超过 10MB；蒙版须与首图同尺寸。</span>
           </div>
 
           <div v-if="referenceImages.length" class="reference-grid">
@@ -882,6 +933,18 @@ async function copyText(text: string) {
                 <img :src="image.previewUrl" :alt="image.name" @error="useUnavailableImage" />
               </button>
               <button class="reference-remove" type="button" title="移除参考图" @click="removeReferenceImage(index)">
+                <X :size="13" />
+              </button>
+            </figure>
+          </div>
+
+          <div v-if="maskImage" class="mask-preview-row">
+            <span class="muted">蒙版</span>
+            <figure class="reference-tile">
+              <button class="reference-preview-button" type="button" title="蒙版预览">
+                <img :src="maskImage.previewUrl" :alt="maskImage.name" />
+              </button>
+              <button class="reference-remove" type="button" title="移除蒙版" @click="removeMaskImage">
                 <X :size="13" />
               </button>
             </figure>
@@ -1067,6 +1130,7 @@ async function copyText(text: string) {
         <div class="doc-body">
           <section v-if="activeDocTab === 'gpt-image-2'" class="doc-section">
             <p><strong>GPT-Image-2：</strong>size 请传画幅比例（如 1:1）。文生图 JSON POST /images/generations（async: true，stream: false）；带参考图/多图叠图/蒙版须 multipart POST /images/edits（image / image[]），JSON generations 传 image URL 无效；GET 轮询取 data.url。</p>
+            <p><strong>计费：</strong>每张固定 $0.50。任务创建前冻结对应额度，生成成功后结算，失败或超时自动释放。</p>
 
             <h3>接口</h3>
             <ul>
@@ -1092,7 +1156,7 @@ async function copyText(text: string) {
             <h3>请求 JSON</h3>
             <pre><code>{
   "async": true,
-  "model": "gpt-image-2",
+  "model": "cy-img1-gpt-image-2",
   "n": 1,
   "prompt": "一只橘猫坐在窗台上，午后阳光",
   "size": "1:1",
@@ -1103,7 +1167,7 @@ async function copyText(text: string) {
             <pre><code>{
   "created_at": 1715923200,
   "id": "task_img_01HZX8A2...",
-  "model": "gpt-image-2",
+  "model": "cy-img1-gpt-image-2",
   "object": "image.generation",
   "progress": "10%",
   "status": "queued"

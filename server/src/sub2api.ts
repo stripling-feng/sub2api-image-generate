@@ -1,4 +1,4 @@
-import { createWriteStream } from "node:fs";
+import { createWriteStream, openAsBlob } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { once } from "node:events";
@@ -7,6 +7,25 @@ import { config } from "./config.js";
 import { logEvent } from "./logger.js";
 
 const imageRequestTimeoutMs = Number(process.env.IMAGE_REQUEST_TIMEOUT_MS ?? 900_000);
+const asyncImageModel = "cy-img1-gpt-image-2";
+
+export type ImageUpload = {
+  name: string;
+  mimeType: string;
+  data?: string;
+  filePath?: string;
+};
+
+export type ImageTaskOperation = "generations" | "edits";
+
+export type ImageTaskPayload = {
+  id?: string;
+  status?: string;
+  progress: number;
+  urls: string[];
+  error?: string;
+  raw: unknown;
+};
 const snowflakeEpoch = 1_704_067_200_000;
 let snowflakeSequence = 0n;
 let snowflakeLastMs = 0n;
@@ -63,6 +82,28 @@ export function normalizeImageEditsEndpoint(baseUrl: string): string {
     return `${trimmed}/images/edits`;
   }
   return `${trimmed}/v1/images/edits`;
+}
+
+export function normalizeImageTaskEndpoint(baseUrl: string, operation: ImageTaskOperation, taskId: string): string {
+  const endpoint = operation === "edits" ? normalizeImageEditsEndpoint(baseUrl) : normalizeImagesEndpoint(baseUrl);
+  return `${endpoint}/${encodeURIComponent(taskId)}`;
+}
+
+export function normalizeImageContentEndpoint(baseUrl: string, taskId: string): string {
+  const generationsEndpoint = normalizeImagesEndpoint(baseUrl);
+  const apiRoot = generationsEndpoint.replace(/\/images\/generations$/, "");
+  return `${apiRoot}/images/${encodeURIComponent(taskId)}/content`;
+}
+
+export function buildAsyncImageRequest(body: Record<string, unknown>, count: number): Record<string, unknown> {
+  return {
+    model: asyncImageModel,
+    prompt: body.prompt,
+    size: body.size,
+    n: Math.max(1, Math.min(10, Number(count) || 1)),
+    async: true,
+    stream: false
+  };
 }
 
 export function normalizeModelsEndpoint(baseUrl: string): string {
@@ -180,7 +221,8 @@ export async function callImageEdit(args: {
   baseUrl: string;
   apiKey: string;
   body: Record<string, unknown>;
-  images: Array<{ name: string; mimeType: string; data: string }>;
+  images: ImageUpload[];
+  mask?: ImageUpload;
   requestId?: string;
 }): Promise<{ json: unknown; durationMs: number }> {
   const startedAt = Date.now();
@@ -195,7 +237,7 @@ export async function callImageEdit(args: {
     responseFormat: args.body.response_format,
     outputFormat: args.body.output_format,
     imageCount: args.images.length,
-    imageBytes: args.images.reduce((total, image) => total + Buffer.byteLength(image.data, "base64"), 0),
+    imageBytes: args.images.reduce((total, image) => total + (image.data ? Buffer.byteLength(image.data, "base64") : 0), 0),
     timeoutMs: imageRequestTimeoutMs
   });
 
@@ -205,10 +247,19 @@ export async function callImageEdit(args: {
     }
   }
 
+  const imageField = args.images.length === 1 ? "image" : "image[]";
   for (const image of args.images) {
-    const buffer = Buffer.from(image.data, "base64");
-    const blob = new Blob([buffer], { type: image.mimeType });
-    form.append("image", blob, image.name);
+    const blob = image.filePath
+      ? await openAsBlob(image.filePath, { type: image.mimeType })
+      : new Blob([Buffer.from(image.data ?? "", "base64")], { type: image.mimeType });
+    form.append(imageField, blob, image.name);
+  }
+
+  if (args.mask) {
+    const maskBlob = args.mask.filePath
+      ? await openAsBlob(args.mask.filePath, { type: args.mask.mimeType })
+      : new Blob([Buffer.from(args.mask.data ?? "", "base64")], { type: args.mask.mimeType });
+    form.append("mask", maskBlob, args.mask.name);
   }
 
   const response = await fetch(endpoint, {
@@ -256,6 +307,81 @@ export async function callImageEdit(args: {
   return { json, durationMs };
 }
 
+function parseProgress(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) return Math.max(0, Math.min(100, Math.round(value)));
+  if (typeof value === "string") {
+    const parsed = Number(value.replace("%", "").trim());
+    if (Number.isFinite(parsed)) return Math.max(0, Math.min(100, Math.round(parsed)));
+  }
+  return 0;
+}
+
+export function parseImageTaskPayload(payload: unknown): ImageTaskPayload {
+  const obj = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
+  return {
+    id: typeof obj.id === "string" ? obj.id : undefined,
+    status: typeof obj.status === "string" ? obj.status.toLowerCase() : undefined,
+    progress: parseProgress(obj.progress),
+    urls: extractImageItems(payload).flatMap((item) => item.url ? [item.url] : []),
+    error: extractErrorMessage(payload),
+    raw: payload
+  };
+}
+
+export async function callImageTaskStatus(args: {
+  baseUrl: string;
+  apiKey: string;
+  operation: ImageTaskOperation;
+  taskId: string;
+  requestId?: string;
+}): Promise<{ task: ImageTaskPayload; durationMs: number }> {
+  const startedAt = Date.now();
+  const endpoint = normalizeImageTaskEndpoint(args.baseUrl, args.operation, args.taskId);
+  const response = await fetch(endpoint, {
+    headers: { Authorization: `Bearer ${args.apiKey}` },
+    signal: AbortSignal.timeout(config.imageTaskPollTimeoutMs)
+  });
+  const text = await response.text();
+  let json: unknown;
+  try {
+    json = text ? JSON.parse(text) : {};
+  } catch {
+    json = { raw: text };
+  }
+  if (!response.ok) {
+    const message = extractErrorMessage(json) ?? `Image task query failed with HTTP ${response.status}`;
+    throw Object.assign(new Error(message), { status: response.status, payload: json });
+  }
+  const durationMs = Date.now() - startedAt;
+  logEvent("sub2api.image.task.status", {
+    requestId: args.requestId,
+    taskId: args.taskId,
+    operation: args.operation,
+    status: response.status,
+    durationMs
+  });
+  return { task: parseImageTaskPayload(json), durationMs };
+}
+
+export async function callImageTaskContent(args: {
+  baseUrl: string;
+  apiKey: string;
+  taskId: string;
+}): Promise<{ buffer: Buffer; mimeType: string }> {
+  const endpoint = normalizeImageContentEndpoint(args.baseUrl, args.taskId);
+  const response = await fetch(endpoint, {
+    headers: { Authorization: `Bearer ${args.apiKey}` },
+    signal: AbortSignal.timeout(imageRequestTimeoutMs)
+  });
+  if (!response.ok) {
+    throw new Error(`Image task content download failed with HTTP ${response.status}`);
+  }
+  return {
+    buffer: Buffer.from(await response.arrayBuffer()),
+    mimeType: response.headers.get("content-type") ?? "image/png"
+  };
+}
+
 export function extractErrorMessage(payload: unknown): string | undefined {
   if (!payload || typeof payload !== "object") return undefined;
   const obj = payload as Record<string, unknown>;
@@ -292,12 +418,20 @@ function readUInt24LE(buffer: Buffer, offset: number): number {
   return buffer[offset] + (buffer[offset + 1] << 8) + (buffer[offset + 2] << 16);
 }
 
-function readImageDimensions(buffer: Buffer): { width?: number; height?: number } {
+export function readImageDimensions(buffer: Buffer): { width?: number; height?: number } {
   if (buffer.length >= 24 && buffer.toString("ascii", 1, 4) === "PNG") {
     return {
       width: buffer.readUInt32BE(16),
       height: buffer.readUInt32BE(20)
     };
+  }
+
+  if (buffer.length >= 10 && (buffer.toString("ascii", 0, 6) === "GIF87a" || buffer.toString("ascii", 0, 6) === "GIF89a")) {
+    return { width: buffer.readUInt16LE(6), height: buffer.readUInt16LE(8) };
+  }
+
+  if (buffer.length >= 26 && buffer.toString("ascii", 0, 2) === "BM") {
+    return { width: Math.abs(buffer.readInt32LE(18)), height: Math.abs(buffer.readInt32LE(22)) };
   }
 
   if (buffer.length >= 10 && buffer[0] === 0xff && buffer[1] === 0xd8) {
@@ -404,6 +538,26 @@ export async function persistImageFromBase64(jobId: string, b64: string): Promis
     sizeBytes: buffer.byteLength,
     ...dimensions
   };
+}
+
+export async function persistImageFromBuffer(jobId: string, buffer: Buffer, declaredMimeType?: string): Promise<{
+  filePath: string;
+  publicUrl: string;
+  mimeType: string;
+  sizeBytes: number;
+  width?: number;
+  height?: number;
+}> {
+  const type = await fileTypeFromBuffer(buffer);
+  const mimeType = type?.mime ?? declaredMimeType ?? "image/png";
+  const ext = type?.ext ?? mimeType.split("/")[1]?.split(";")[0] ?? "png";
+  const dimensions = readImageDimensions(buffer);
+  const filename = createImageFilename(ext);
+  const { dir, publicUrl } = imageStoragePaths(jobId, filename);
+  await fs.mkdir(dir, { recursive: true });
+  const filePath = path.join(dir, filename);
+  await fs.writeFile(filePath, buffer);
+  return { filePath, publicUrl, mimeType, sizeBytes: buffer.byteLength, ...dimensions };
 }
 
 export function persistImageUrlReference(url: string): {

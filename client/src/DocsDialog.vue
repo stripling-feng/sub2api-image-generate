@@ -68,6 +68,7 @@ const activeDocTab = ref<"gpt-image-2" | "gpt-image-2-4k">("gpt-image-2");
                   <li><strong>size：</strong>请传画幅比例，例如 1:1、3:2、2:3。</li>
                   <li><strong>文生图：</strong>JSON POST /images/generations。</li>
                   <li><strong>参考图 / 多图叠图：</strong>multipart POST /images/edits，字段使用 image 或 image[]。</li>
+                  <li><strong>计费：</strong>每张固定扣除 $0.50；提交前冻结额度，成功后结算，失败自动释放。</li>
                 </ul>
               </div>
 
@@ -85,7 +86,7 @@ const activeDocTab = ref<"gpt-image-2" | "gpt-image-2-4k">("gpt-image-2");
                     <tr>
                       <td>model</td>
                       <td>是</td>
-                      <td>固定传模型广场展示名 gpt-image-2/gpt-image-2-4k。</td>
+                      <td>固定传模型广场展示名 cy-img1-gpt-image-2。</td>
                     </tr>
                     <tr>
                       <td>prompt</td>
@@ -103,14 +104,19 @@ const activeDocTab = ref<"gpt-image-2" | "gpt-image-2-4k">("gpt-image-2");
                       <td>生成张数，1-10，默认 1。</td>
                     </tr>
                     <tr>
-                      <td>response_format</td>
-                      <td>否</td>
-                      <td>返回格式，可传 url 或 b64_json。推荐 url。</td>
+                      <td>async / stream</td>
+                      <td>是</td>
+                      <td>固定传 async=true、stream=false。</td>
                     </tr>
                     <tr>
                       <td>image / image[]</td>
                       <td>编辑时必填</td>
                       <td>edits 端点 multipart 参考图字段，最多 10 张。</td>
+                    </tr>
+                    <tr>
+                      <td>mask</td>
+                      <td>否</td>
+                      <td>PNG 蒙版，透明区域为编辑区，尺寸须与第一张参考图一致。</td>
                     </tr>
                   </tbody>
                 </table>
@@ -119,10 +125,9 @@ const activeDocTab = ref<"gpt-image-2" | "gpt-image-2-4k">("gpt-image-2");
               <h3>请求 JSON</h3>
               <pre><code>{
   "async": true,
-  "model": "gpt-image-2",
+  "model": "cy-img1-gpt-image-2",
   "n": 1,
   "prompt": "一只橘猫坐在窗台上，午后阳光",
-  "response_format": "b64_json",
   "size": "1:1",
   "stream": false
 }</code></pre>
@@ -131,7 +136,7 @@ const activeDocTab = ref<"gpt-image-2" | "gpt-image-2-4k">("gpt-image-2");
               <pre><code>{
   "created_at": 1715923200,
   "id": "task_img_01HZX8A2...",
-  "model": "gpt-image-2",
+  "model": "cy-img1-gpt-image-2",
   "object": "image.generation",
   "progress": "10%",
   "status": "queued"

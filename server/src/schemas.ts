@@ -57,8 +57,20 @@ export const generateSchema = z.object({
     name: z.string().min(1),
     mimeType: z.string().regex(/^image\//),
     data: z.string().min(1).max(maxReferenceImageBase64Length)
-  })).max(4).default([])
+  })).max(10).default([]),
+  mask: z.object({
+    name: z.string().min(1),
+    mimeType: z.literal("image/png"),
+    data: z.string().min(1).max(maxReferenceImageBase64Length)
+  }).optional()
 }).superRefine((value, ctx) => {
+  if (value.mask && value.referenceImages.length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["mask"],
+      message: "A mask requires at least one reference image"
+    });
+  }
   if (value.size !== "auto") {
     if (isRatioSizeModel(value.model)) {
       const ratio = parseAspectRatio(value.size);

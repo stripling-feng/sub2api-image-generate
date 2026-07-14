@@ -554,6 +554,11 @@ select:disabled {
   border-color: var(--accent);
 }
 
+.upload-button.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .upload-button input {
   display: none;
 }
@@ -563,6 +568,22 @@ select:disabled {
   grid-template-columns: repeat(auto-fill, 64px);
   gap: 9px;
   margin: 0 0 13px;
+}
+
+.mask-preview-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 13px;
+}
+
+.model-format-hint {
+  margin: 8px 0 14px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent), transparent 92%);
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .reference-tile {

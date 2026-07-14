@@ -5,10 +5,11 @@ type ApiErrorDetail = {
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const apiKey = localStorage.getItem("apiKey") ?? "";
+  const hasFormBody = options.body instanceof FormData;
   const response = await fetch(path, {
     credentials: "include",
     headers: {
-      "Content-Type": "application/json",
+      ...(hasFormBody ? {} : { "Content-Type": "application/json" }),
       ...(apiKey ? { "X-API-Key": apiKey } : {}),
       ...(options.headers ?? {})
     },
@@ -39,5 +40,6 @@ export const api = {
     method: "POST",
     body: body === undefined ? undefined : JSON.stringify(body)
   }),
+  postForm: <T>(path: string, body: FormData) => request<T>(path, { method: "POST", body }),
   delete: <T>(path: string) => request<T>(path, { method: "DELETE" })
 };

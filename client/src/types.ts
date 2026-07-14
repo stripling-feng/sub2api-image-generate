@@ -2,6 +2,8 @@ export type Profile = {
   id: string;
   baseUrl: string;
   keyHashPreview: string;
+  balanceUsd?: string;
+  availableBalanceUsd?: string;
 };
 
 export type GeneratedImage = {
@@ -27,6 +29,10 @@ export type GenerationJob = {
   responseFormat: "b64_json" | "url";
   params: Record<string, unknown>;
   status: "PENDING" | "SUCCEEDED" | "FAILED";
+  progress?: number;
+  upstreamStatus?: string | null;
+  billingStatus?: string | null;
+  billingAmount?: string | number | null;
   errorMessage?: string | null;
   durationMs?: number | null;
   createdAt: string;

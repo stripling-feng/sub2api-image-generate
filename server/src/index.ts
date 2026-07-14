@@ -3,6 +3,8 @@ import path from "node:path";
 import cookieParser from "cookie-parser";
 import cors from "cors";
 import express, { type Request, type Response, type NextFunction } from "express";
+import multer from "multer";
+import { fileTypeFromBuffer } from "file-type";
 import { Prisma, type GenerationJob } from "@prisma/client";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
 import { nanoid } from "nanoid";
@@ -13,16 +15,79 @@ import { bindSchema, generateSchema, templateSchema } from "./schemas.js";
 import { createSession, requireSession, sessionCookie, type AuthedRequest } from "./session.js";
 import { errorDetails, logEvent } from "./logger.js";
 import { startImageRetentionCleanup } from "./imageRetention.js";
+import { startImageTaskPolling } from "./imageTaskPoller.js";
+import { finalizeFailedImageBilling, settleReservedImageBilling } from "./imageBillingPolicy.js";
+import { assertSub2apiBillingReady, getBillingAccountGateway, releaseImageCharge, reserveImageCharge, settleImageCharge, validateSub2apiApiKey, type BillingReservation } from "./sub2apiBilling.js";
 import {
+  buildAsyncImageRequest,
   callImageGeneration,
   callImageEdit,
   extractErrorMessage,
   extractImageItems,
+  parseImageTaskPayload,
   persistImageFromBase64,
-  persistImageFromUrl
+  persistImageFromUrl,
+  readImageDimensions,
+  type ImageUpload
 } from "./sub2api.js";
 
 const app = express();
+const temporaryImageDir = path.join(config.uploadDir, "temporary-image-requests");
+const multipartImageUpload = multer({
+  dest: temporaryImageDir,
+  limits: { fileSize: 10 * 1024 * 1024, files: 11, fields: 10 }
+}).fields([
+  { name: "image", maxCount: 10 },
+  { name: "image[]", maxCount: 10 },
+  { name: "mask", maxCount: 1 }
+]);
+
+type MultipartFiles = Record<string, Express.Multer.File[]>;
+
+async function cleanupUploadedFiles(files: Express.Multer.File[]) {
+  await Promise.all(files.map((file) => fs.unlink(file.path).catch(() => undefined)));
+}
+
+async function validateUploadedImage(file: Express.Multer.File, mask = false) {
+  const buffer = await fs.readFile(file.path);
+  const dimensions = readImageDimensions(buffer);
+  const isPng = buffer.length >= 24 && buffer.toString("ascii", 1, 4) === "PNG";
+  const detectedType = await fileTypeFromBuffer(buffer);
+  if (mask && (!isPng || file.mimetype !== "image/png")) {
+    throw Object.assign(new Error("Mask must be a PNG image."), { status: 422 });
+  }
+  if (!detectedType?.mime.startsWith("image/")) {
+    throw Object.assign(new Error(`Unsupported or invalid image: ${file.originalname}`), { status: 422 });
+  }
+  if (mask && (!dimensions.width || !dimensions.height)) {
+    throw Object.assign(new Error("Unable to read mask dimensions."), { status: 422 });
+  }
+  return dimensions;
+}
+
+async function imageUploadBuffer(image: ImageUpload) {
+  return image.filePath ? fs.readFile(image.filePath) : Buffer.from(image.data ?? "", "base64");
+}
+
+async function validateMaskDimensions(reference: ImageUpload, mask: ImageUpload) {
+  const [referenceBuffer, maskBuffer] = await Promise.all([imageUploadBuffer(reference), imageUploadBuffer(mask)]);
+  const referenceDimensions = readImageDimensions(referenceBuffer);
+  const maskDimensions = readImageDimensions(maskBuffer);
+  const isPng = maskBuffer.length >= 24 && maskBuffer.toString("ascii", 1, 4) === "PNG";
+  if (!isPng || mask.mimeType !== "image/png") {
+    throw Object.assign(new Error("Mask must be a PNG image."), { status: 422 });
+  }
+  if (!referenceDimensions.width || !referenceDimensions.height || !maskDimensions.width || !maskDimensions.height) {
+    throw Object.assign(new Error("Unable to read reference image or mask dimensions."), { status: 422 });
+  }
+  if (referenceDimensions.width !== maskDimensions.width || referenceDimensions.height !== maskDimensions.height) {
+    throw Object.assign(new Error("Mask dimensions must match the first reference image."), { status: 422 });
+  }
+}
+
+function uploadedFile(file: Express.Multer.File): ImageUpload {
+  return { name: file.originalname, mimeType: file.mimetype, filePath: file.path };
+}
 
 function withoutUndefined<T extends Record<string, unknown>>(value: T): Record<string, unknown> {
   return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined && item !== null));
@@ -127,6 +192,7 @@ app.post("/api/session/bind", async (req, res, next) => {
       baseUrl: input.baseUrl,
       apiKeyChars: input.apiKey.length
     });
+    const billingAccount = await validateSub2apiApiKey(input.apiKey);
     const keyHash = hashSecret(input.apiKey);
     const profile = await prisma.apiProfile.upsert({
       where: { keyHash },
@@ -153,7 +219,9 @@ app.post("/api/session/bind", async (req, res, next) => {
       profile: {
         id: profile.id,
         baseUrl: profile.baseUrl,
-        keyHashPreview: `${profile.keyHash.slice(0, 8)}...`
+        keyHashPreview: `${profile.keyHash.slice(0, 8)}...`,
+        balanceUsd: billingAccount.balanceUsd,
+        availableBalanceUsd: billingAccount.availableBalanceUsd
       }
     });
   } catch (error) {
@@ -220,7 +288,7 @@ async function runGenerationJob(args: {
   profile: Pick<AuthedRequest["profile"], "baseUrl" | "encryptedKey">;
   job: GenerationJob;
   params: Record<string, unknown>;
-  referenceImages: Array<{ name: string; mimeType: string; data: string }>;
+  referenceImages: ImageUpload[];
 }) {
   const startedAt = Date.now();
   const requestId = typeof args.params.request_id === "string" ? args.params.request_id : undefined;
@@ -356,11 +424,42 @@ async function runGenerationJob(args: {
   }
 }
 
-app.post("/api/images/generate", requireSession, async (req, res, next) => {
+app.post("/api/images/generate", requireSession, multipartImageUpload, async (req, res, next) => {
   const startedAt = Date.now();
+  const multipartFiles = (req.files ?? {}) as MultipartFiles;
+  const referenceFiles = [...(multipartFiles.image ?? []), ...(multipartFiles["image[]"] ?? [])];
+  const maskFiles = multipartFiles.mask ?? [];
+  const allUploadedFiles = [...referenceFiles, ...maskFiles];
+  let cleanupInRoute = true;
   try {
     const profile = (req as AuthedRequest).profile;
-    const input = generateSchema.parse(req.body);
+    if (referenceFiles.length > 10) {
+      throw Object.assign(new Error("At most 10 reference images are allowed."), { status: 422 });
+    }
+    if (maskFiles.length > 1) {
+      throw Object.assign(new Error("Only one mask is allowed."), { status: 422 });
+    }
+    await Promise.all(referenceFiles.map((file) => validateUploadedImage(file)));
+    if (maskFiles[0]) await validateUploadedImage(maskFiles[0], true);
+
+    let rawPayload: unknown = req.body;
+    if (typeof req.body?.payload === "string") {
+      try {
+        rawPayload = JSON.parse(req.body.payload);
+      } catch {
+        throw Object.assign(new Error("Multipart payload must be valid JSON."), { status: 422 });
+      }
+    }
+    const input = generateSchema.parse(rawPayload);
+    const referenceImages: ImageUpload[] = referenceFiles.length
+      ? referenceFiles.map(uploadedFile)
+      : input.referenceImages;
+    const mask: ImageUpload | undefined = maskFiles[0] ? uploadedFile(maskFiles[0]) : input.mask;
+    if (mask && referenceImages.length === 0) {
+      throw Object.assign(new Error("A mask requires at least one reference image."), { status: 422 });
+    }
+    if (mask && referenceImages[0]) await validateMaskDimensions(referenceImages[0], mask);
+
     const requestId = nanoid(16);
     logEvent("api.images.generate.accepted", {
       requestId,
@@ -370,10 +469,10 @@ app.post("/api/images/generate", requireSession, async (req, res, next) => {
       count: input.count,
       responseFormat: input.responseFormat,
       outputFormat: input.outputFormat,
-      referenceImageCount: input.referenceImages.length,
+      referenceImageCount: referenceImages.length,
+      hasMask: Boolean(mask),
       promptChars: input.prompt.length
     });
-    const upstreamParams = buildOpenAIImageRequest(input);
     const jobMetadata = withoutUndefined({
       ...input.extraParams,
       request_id: requestId,
@@ -390,7 +489,9 @@ app.post("/api/images/generate", requireSession, async (req, res, next) => {
       computed_size: input.size
     });
 
-    void Promise.all(Array.from({ length: input.count }, async (_item, index) => {
+    if (input.model === "gpt-image-2") {
+      const prompt = input.negativePrompt ? `${input.prompt}\n\nNegative prompt: ${input.negativePrompt}` : input.prompt;
+      const upstreamParams = buildAsyncImageRequest({ prompt, size: input.size }, input.count);
       const job = await prisma.generationJob.create({
         data: {
           profileId: profile.id,
@@ -400,34 +501,191 @@ app.post("/api/images/generate", requireSession, async (req, res, next) => {
           size: input.size,
           quality: input.quality,
           style: input.style,
-          count: 1,
+          count: input.count,
           responseFormat: input.responseFormat,
           params: {
             ...upstreamParams,
             ...jobMetadata,
-            request_index: index + 1,
-            request_total: input.count
+            request_index: 1,
+            request_total: 1,
+            reference_image_count: referenceImages.length,
+            has_mask: Boolean(mask)
           } as Prisma.InputJsonObject,
           status: "PENDING"
         }
       });
+      let billingReservation: BillingReservation | undefined;
+      const operation: "generations" | "edits" = referenceImages.length ? "edits" : "generations";
       logEvent("generation.job.created", {
         requestId,
         jobId: job.id,
-        index: index + 1,
-        total: input.count,
+        total: 1,
         model: job.model,
         size: job.size,
         responseFormat: job.responseFormat
       });
-      const params = job.params as Record<string, unknown>;
-      void runGenerationJob({ profile, job, params, referenceImages: input.referenceImages });
-    })).catch((error) => {
-      logEvent("generation.enqueue.failed", {
-        requestId,
-        ...errorDetails(error)
-      });
-    });
+
+      try {
+        billingReservation = await reserveImageCharge(decryptSecret(profile.encryptedKey), input.count);
+        const billingParams = {
+          ...(job.params as Prisma.InputJsonObject),
+          billing_unit_price_usd: config.gptImage2UnitPriceUsd,
+          billing_amount_usd: billingReservation.amountUsd,
+          billing_available_after_reserve_usd: billingReservation.availableBalanceUsd
+        } as Prisma.InputJsonObject;
+        await prisma.generationJob.update({
+          where: { id: job.id },
+          data: {
+            billingStatus: "RESERVED",
+            billingAmount: billingReservation.amountUsd,
+            billingApiKeyId: billingReservation.apiKeyId,
+            billingUserId: billingReservation.userId,
+            billingAccountId: billingReservation.accountId,
+            billingReservedAt: new Date(),
+            params: billingParams
+          }
+        });
+        const billingContext = {
+          jobId: job.id,
+          apiKeyId: billingReservation.apiKeyId,
+          userId: billingReservation.userId,
+          accountId: billingReservation.accountId,
+          amountUsd: billingReservation.amountUsd,
+          count: input.count,
+          size: input.size,
+          operation,
+          durationMs: Date.now() - startedAt
+        };
+        const immediateBilling = await settleReservedImageBilling(billingContext, {
+          chargeImmediately: config.image2ChargeOnFailure,
+          settle: settleImageCharge
+        });
+        await prisma.generationJob.update({
+          where: { id: job.id },
+          data: {
+            billingStatus: immediateBilling.billingStatus,
+            billingUsageLogId: immediateBilling.billingUsageLogId,
+            billingSettledAt: immediateBilling.billingSettledAt
+          }
+        });
+        const billingGateway = await getBillingAccountGateway(billingReservation.accountId);
+        const result = referenceImages.length
+          ? await callImageEdit({
+            baseUrl: billingGateway.baseUrl,
+            apiKey: billingGateway.apiKey,
+            body: upstreamParams,
+            images: referenceImages,
+            mask,
+            requestId
+          })
+          : await callImageGeneration({
+            baseUrl: billingGateway.baseUrl,
+            apiKey: billingGateway.apiKey,
+            body: upstreamParams,
+            requestId
+          });
+        const task = parseImageTaskPayload(result.json);
+        if (!task.id) {
+          throw Object.assign(new Error("Upstream image task response is missing id."), { payload: result.json });
+        }
+        await prisma.generationJob.update({
+          where: { id: job.id },
+          data: {
+            upstreamTaskId: task.id,
+            upstreamOperation: operation,
+            upstreamStatus: task.status ?? "queued",
+            progress: task.progress,
+            nextPollAt: new Date(),
+            params: {
+              ...billingParams,
+              upstream_create_duration_ms: result.durationMs,
+              upstream_create_payload: result.json as Prisma.InputJsonValue
+            } as Prisma.InputJsonObject
+          }
+        });
+      } catch (error) {
+        const message = generationErrorMessage(error);
+        let billingStatus = billingReservation ? "RELEASE_FAILED" : "FAILED";
+        let billingUsageLogId: string | undefined;
+        let billingSettledAt: Date | undefined;
+        let billingError = billingReservation ? message : undefined;
+        if (billingReservation) {
+          try {
+            const result = await finalizeFailedImageBilling({
+              jobId: job.id,
+              apiKeyId: billingReservation.apiKeyId,
+              userId: billingReservation.userId,
+              accountId: billingReservation.accountId,
+              amountUsd: billingReservation.amountUsd,
+              count: input.count,
+              size: input.size,
+              operation,
+              durationMs: Date.now() - startedAt
+            }, {
+              chargeOnFailure: config.image2ChargeOnFailure,
+              settle: settleImageCharge,
+              release: releaseImageCharge
+            });
+            billingStatus = result.billingStatus;
+            billingUsageLogId = result.billingUsageLogId;
+            billingSettledAt = result.billingSettledAt;
+            billingError = undefined;
+          } catch (billingFailure) {
+            billingStatus = config.image2ChargeOnFailure ? "CHARGE_FAILED" : "RELEASE_FAILED";
+            billingError = billingFailure instanceof Error ? billingFailure.message : "Failed to finalize image billing.";
+          }
+        }
+        await prisma.generationJob.update({
+          where: { id: job.id },
+          data: {
+            status: "FAILED",
+            upstreamStatus: "create_failed",
+            errorMessage: message,
+            durationMs: Date.now() - startedAt,
+            completedAt: new Date(),
+            billingStatus,
+            billingUsageLogId,
+            billingSettledAt,
+            billingError
+          }
+        }).catch(() => undefined);
+        throw error;
+      }
+    } else {
+      const upstreamParams = buildOpenAIImageRequest(input);
+      cleanupInRoute = false;
+      void (async () => {
+        try {
+          await Promise.all(Array.from({ length: input.count }, async (_item, index) => {
+            const job = await prisma.generationJob.create({
+              data: {
+                profileId: profile.id,
+                prompt: input.prompt,
+                negativePrompt: input.negativePrompt,
+                model: input.model,
+                size: input.size,
+                quality: input.quality,
+                style: input.style,
+                count: 1,
+                responseFormat: input.responseFormat,
+                params: {
+                  ...upstreamParams,
+                  ...jobMetadata,
+                  request_index: index + 1,
+                  request_total: input.count
+                } as Prisma.InputJsonObject,
+                status: "PENDING"
+              }
+            });
+            await runGenerationJob({ profile, job, params: job.params as Record<string, unknown>, referenceImages });
+          }));
+        } catch (error) {
+          logEvent("generation.enqueue.failed", { requestId, ...errorDetails(error) });
+        } finally {
+          await cleanupUploadedFiles(allUploadedFiles);
+        }
+      })();
+    }
 
     logEvent("api.images.generate.response", {
       requestId,
@@ -441,6 +699,8 @@ app.post("/api/images/generate", requireSession, async (req, res, next) => {
       ...errorDetails(error)
     });
     next(error);
+  } finally {
+    if (cleanupInRoute) await cleanupUploadedFiles(allUploadedFiles);
   }
 });
 
@@ -619,6 +879,12 @@ app.delete("/api/templates/:id", requireSession, async (req, res, next) => {
 });
 
 app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  if (error instanceof multer.MulterError) {
+    const status = error.code === "LIMIT_FILE_SIZE" || error.code === "LIMIT_FILE_COUNT" ? 413 : 422;
+    res.status(status).json({ error: error.message, code: error.code });
+    return;
+  }
+
   if (error instanceof Prisma.PrismaClientInitializationError) {
     res.status(503).json({ error: "Database is unavailable. Check DATABASE_URL and PostgreSQL status." });
     return;
@@ -640,12 +906,18 @@ app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
   const payload = typeof error === "object" && error && "payload" in error
     ? (error as { payload: unknown }).payload
     : undefined;
+  const code = typeof error === "object" && error && "code" in error
+    ? String((error as { code: unknown }).code)
+    : undefined;
   const message = error instanceof Error ? error.message : extractErrorMessage(payload) ?? "Internal server error.";
-  res.status(Number.isFinite(status) ? status : 500).json({ error: message, payload });
+  res.status(Number.isFinite(status) ? status : 500).json({ error: message, code, payload });
 });
 
 await fs.mkdir(path.join(config.uploadDir, "images"), { recursive: true });
+await fs.mkdir(temporaryImageDir, { recursive: true });
+await assertSub2apiBillingReady();
 startImageRetentionCleanup();
+startImageTaskPolling();
 
 app.listen(config.port, () => {
   console.log(`sub2api image workbench API listening on http://localhost:${config.port}`);
