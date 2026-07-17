@@ -328,6 +328,22 @@ onUnmounted(stopPolling);
 
 <style scoped>
 .video-studio {
+  color-scheme: light;
+  --bg: #f5f7fa;
+  --bg-soft: #f8fafc;
+  --panel: #ffffff;
+  --panel-strong: #f3f5f7;
+  --panel-soft: #f7f8fa;
+  --text: #171a21;
+  --muted: #697386;
+  --line: rgba(23, 26, 33, 0.12);
+  --line-strong: rgba(23, 26, 33, 0.22);
+  --accent: #0891b2;
+  --accent-2: #059669;
+  --accent-strong: #0e7490;
+  --danger: #dc2626;
+  --input: #ffffff;
+  --shadow: rgba(23, 26, 33, 0.12);
   height: 100dvh;
   min-width: 320px;
   display: grid;
