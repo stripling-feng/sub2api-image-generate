@@ -26,6 +26,7 @@ const creationMode = ref<CreationMode>("text");
 const historyOpen = ref(window.innerWidth >= 1180);
 const materialsOpen = ref(false);
 let pollTimer: number | undefined;
+let autoBindTimer: number | undefined;
 
 const form = reactive({
   model: "",
@@ -115,11 +116,12 @@ function applyDefaults() {
 }
 
 async function connect() {
-  if (apiKey.value.length < 8) { error.value = "请输入有效的 API Key"; return; }
+  const normalizedApiKey = apiKey.value.trim();
+  if (normalizedApiKey.length < 8) { error.value = "请输入有效的 API Key"; return; }
   error.value = "";
-  localStorage.setItem("apiKey", apiKey.value);
+  localStorage.setItem("apiKey", normalizedApiKey);
   localStorage.setItem("baseUrl", fixedBaseUrl);
-  const data = await api.post<{ profile: Profile }>("/api/session/bind", { baseUrl: fixedBaseUrl, apiKey: apiKey.value });
+  const data = await api.post<{ profile: Profile }>("/api/session/bind", { baseUrl: fixedBaseUrl, apiKey: normalizedApiKey });
   store.profile = data.profile;
   await loadHistory(1);
 }
@@ -215,11 +217,25 @@ function statusText(job: VideoGenerationJob) { return job.status === "PENDING" ?
 function date(value: string) { return new Date(value).toLocaleString("zh-CN", { hour12: false }); }
 
 watch(() => form.model, applyDefaults);
+watch(apiKey, (value) => {
+  const normalizedApiKey = value.trim();
+  localStorage.setItem("baseUrl", fixedBaseUrl);
+  localStorage.setItem("apiKey", normalizedApiKey);
+  store.profile = null;
+  if (autoBindTimer) window.clearTimeout(autoBindTimer);
+  if (normalizedApiKey.length < 8) return;
+  autoBindTimer = window.setTimeout(() => {
+    connect().catch(cause => { error.value = cause instanceof Error ? cause.message : "连接失败"; });
+  }, 700);
+});
 onMounted(async () => {
   await loadModels().catch(cause => { error.value = cause instanceof Error ? cause.message : "模型加载失败"; });
   if (apiKey.value.length >= 8) await connect().catch(cause => { error.value = cause instanceof Error ? cause.message : "连接失败"; });
 });
-onUnmounted(stopPolling);
+onUnmounted(() => {
+  stopPolling();
+  if (autoBindTimer) window.clearTimeout(autoBindTimer);
+});
 </script>
 
 <template>
@@ -233,7 +249,6 @@ onUnmounted(stopPolling);
       <div class="connect-cluster">
         <KeyRound :size="15" />
         <input v-model="apiKey" type="password" placeholder="输入 API Key" autocomplete="off" aria-label="API Key" />
-        <button class="ghost connect-action" type="button" @click="connect">连接</button>
       </div>
       <div class="toolbar-actions">
         <span v-if="store.profile?.availableBalanceUsd" class="balance"><CircleDollarSign :size="15" />${{ Number(store.profile.availableBalanceUsd).toFixed(2) }}</span>
@@ -364,7 +379,6 @@ onUnmounted(stopPolling);
 .toolbar-brand p { margin: 2px 0 0; color: var(--muted); font-size: 10px; }
 .connect-cluster { width: min(420px, 36vw); gap: 8px; margin-left: auto; color: var(--muted); }
 .connect-cluster input { min-width: 0; height: 36px; padding: 7px 10px; }
-.connect-action { min-height: 36px; padding: 0 12px; }
 .toolbar-actions { gap: 8px; }
 .balance { min-height: 36px; padding: 0 10px; display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 7px; color: var(--accent-2); font-size: 12px; font-weight: 850; white-space: nowrap; }
 .history-toggle-top { position: relative; }
