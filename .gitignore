@@ -5,6 +5,8 @@ node_modules/
 dist/
 **/dist/
 build/
+**/target/
+*.jar
 **/*.tsbuildinfo
 .next/
 .nuxt/
@@ -25,6 +27,7 @@ work/
 
 # logs
 *.log
+*.log.gz
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

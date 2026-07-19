@@ -1,0 +1,9 @@
+package com.feng.system.module.system.mapper;
+
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.feng.system.module.system.entity.SysDistrict;
+import org.apache.ibatis.annotations.Mapper;
+
+@Mapper
+public interface SysDistrictMapper extends BaseMapper<SysDistrict> {
+}

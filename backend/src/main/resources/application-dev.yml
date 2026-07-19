@@ -1,0 +1,34 @@
+spring:
+  datasource:
+    url: ${MEDIA_DB_URL:jdbc:postgresql://5.104.85.25:5432/sub2api_media}
+    username: root
+    password: Aa@110112119
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 50
+      minimum-idle: 20
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+  data:
+    redis:
+      host: 127.0.0.1
+      port: 6379
+      database: 0
+      lettuce:
+        pool:
+          max-active: 50
+          max-idle: 20
+          min-idle: 5
+          max-wait: 3000ms
+
+mybatis-plus:
+  configuration:
+    log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
+
+sub2api:
+  datasource:
+    url: ${SUB2API_DB_URL:jdbc:postgresql://5.104.85.25:5432/sub2api}
+    username: root
+    password: Aa@110112119
+    maximum-pool-size: ${SUB2API_DB_POOL_SIZE:10}

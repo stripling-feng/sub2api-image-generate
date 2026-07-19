@@ -2,7 +2,8 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { ArrowDownToLine, BookOpenText, Brush, Clock3, Eye, EyeOff, ImagePlus, KeyRound, Loader2, Play, RefreshCw, Trash2, X } from "lucide-vue-next";
 import { useWorkbenchStore } from "./stores/workbench";
-import type { GeneratedImage, GenerationJob } from "./types";
+import { api } from "./api";
+import type { GeneratedImage, GenerationJob, ImageModelConfig } from "./types";
 
 type ReferenceImage = {
   name: string;
@@ -14,44 +15,7 @@ type ReferenceImage = {
 };
 
 type PreviewImage = GeneratedImage & { job: GenerationJob };
-type ImageModel = "gpt-image-2-4k" | "gpt-image-2";
-type ImageSizeTier = "auto" | "1k" | "2k" | "4k";
-type AspectRatioPreset = "auto" | "1:1" | "2:3" | "3:2" | "9:16" | "16:9";
-type OutputFormat = "png" | "jpeg" | "webp";
-type CustomSizeMode = "ratio" | "size" | "reference";
-
-const maxPixels = 8_294_400;
-const presetSizes: Record<Exclude<ImageSizeTier, "auto">, Record<Exclude<AspectRatioPreset, "auto">, { width: number; height: number }>> = {
-  "1k": {
-    "1:1": { width: 1024, height: 1024 },
-    "2:3": { width: 1024, height: 1536 },
-    "3:2": { width: 1536, height: 1024 },
-    "9:16": { width: 1008, height: 1792 },
-    "16:9": { width: 1792, height: 1008 }
-  },
-  "2k": {
-    "1:1": { width: 2048, height: 2048 },
-    "2:3": { width: 1360, height: 2048 },
-    "3:2": { width: 2048, height: 1360 },
-    "9:16": { width: 1152, height: 2048 },
-    "16:9": { width: 2048, height: 1152 }
-  },
-  "4k": {
-    "1:1": { width: 2880, height: 2880 },
-    "2:3": { width: 2352, height: 3520 },
-    "3:2": { width: 3520, height: 2352 },
-    "9:16": { width: 2160, height: 3840 },
-    "16:9": { width: 3840, height: 2160 }
-  }
-};
-
-const sizeMultiple = 16;
 const maxReferenceImageBytes = 10 * 1024 * 1024;
-const aspectRatios = ["auto", "1:1", "2:3", "3:2", "9:16", "16:9"] as const;
-const modelSizeTier: Record<ImageModel, Exclude<ImageSizeTier, "auto">> = {
-  "gpt-image-2": "1k",
-  "gpt-image-2-4k": "4k"
-};
 const snowflakeEpoch = 1_704_067_200_000;
 let snowflakeSequence = 0n;
 let snowflakeLastMs = 0n;
@@ -67,17 +31,13 @@ const connection = reactive({
 
 const form = reactive({
   prompt: "",
-  model: "gpt-image-2" as ImageModel,
-  aspectRatio: "auto" as AspectRatioPreset,
-  customSizeMode: "ratio" as CustomSizeMode,
-  customAspectRatio: "1:1",
-  customWidth: 1024,
-  customHeight: 1024,
-  count: 1,
-  quality: "auto",
-  outputFormat: "png" as OutputFormat,
-  responseFormat: "b64_json" as "b64_json" | "url"
+  model: "gpt-image-2",
+  count: 1
 });
+const modelConfigs = ref<ImageModelConfig[]>([]);
+const modelParameters = reactive<Record<string, unknown>>({});
+const activeModel = computed(() => modelConfigs.value.find(item => item.model === form.model) ?? null);
+const referenceLimit = computed(() => activeModel.value?.maxReferenceImages ?? 0);
 
 const autoBindTimer = ref<number | undefined>();
 const referenceImages = ref<ReferenceImage[]>([]);
@@ -179,51 +139,10 @@ const previewIndex = computed(() => previewImages.value.findIndex((image: Previe
 const previewImage = computed<PreviewImage | null>(() => {
   return previewIndex.value >= 0 ? previewImages.value[previewIndex.value] : null;
 });
-const computedSize = computed(() => {
-  if (form.aspectRatio === "auto") return "auto";
-
-  const preset = presetSizes[modelSizeTier[form.model]][form.aspectRatio as Exclude<AspectRatioPreset, "auto">];
-  return preset ? `${preset.width}x${preset.height}` : "auto";
+const estimatedChargeUsd = computed(() => {
+  const price = Number(activeModel.value?.unitPriceUsd ?? 0);
+  return (Math.max(1, Number(form.count) || 1) * price).toFixed(2);
 });
-
-const upstreamSize = computed(() => {
-  if (form.model === "gpt-image-2-4k") return computedSize.value;
-  return form.aspectRatio;
-});
-
-const upstreamResponseFormat = computed<"b64_json" | "url">(() => form.model === "gpt-image-2-4k" ? "url" : "b64_json");
-const estimatedChargeUsd = computed(() => (Math.max(1, Math.min(10, Number(form.count) || 1)) * 0.5).toFixed(2));
-
-function normalizeSize(inputWidth: number, inputHeight: number, ratioValue: number, pixelLimit = maxPixels) {
-  let width = Math.round(inputWidth);
-  let height = Math.round(inputHeight);
-  let pixels = width * height;
-
-  const effectivePixelLimit = Math.min(maxPixels, pixelLimit);
-
-  if (pixels > effectivePixelLimit) {
-    const scale = Math.sqrt(effectivePixelLimit / pixels);
-    width = Math.floor(width * scale);
-    height = Math.floor(height * scale);
-  }
-
-  width = Math.max(sizeMultiple, Math.floor(width / sizeMultiple) * sizeMultiple);
-  height = Math.max(sizeMultiple, Math.floor(height / sizeMultiple) * sizeMultiple);
-  pixels = width * height;
-
-  while (pixels > effectivePixelLimit) {
-    if (width >= height) {
-      width = Math.max(sizeMultiple, width - sizeMultiple);
-      height = Math.max(sizeMultiple, Math.floor((width / ratioValue) / sizeMultiple) * sizeMultiple);
-    } else {
-      height = Math.max(sizeMultiple, height - sizeMultiple);
-      width = Math.max(sizeMultiple, Math.floor((height * ratioValue) / sizeMultiple) * sizeMultiple);
-    }
-    pixels = width * height;
-  }
-
-  return `${width}x${height}`;
-}
 
 function statusLabel(status: GenerationJob["status"]) {
   return {
@@ -306,21 +225,31 @@ function downloadName(image: GeneratedImage) {
   return `tcboys.de_${createSnowflakeId()}.${ext}`;
 }
 
-function parseAspectRatio(value: string): { width: number; height: number; value: number } | null {
-  const match = value.trim().match(/^(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)$/);
-  if (!match) return null;
-
-  const width = Number(match[1]);
-  const height = Number(match[2]);
-  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
-
-  return { width, height, value: width / height };
-}
-
 function applyTheme() {
   document.documentElement.dataset.theme = theme;
   localStorage.setItem("theme", theme);
   localStorage.setItem("baseUrl", fixedBaseUrl);
+}
+
+function applyModelDefaults() {
+  const model = activeModel.value;
+  for (const key of Object.keys(modelParameters)) delete modelParameters[key];
+  if (!model) return;
+  for (const field of model.parameters) {
+    modelParameters[field.key] = model.defaults[field.key] ?? field.default ?? "";
+  }
+  form.count = Math.max(1, Math.min(model.maxCount, Number(form.count) || 1));
+  if (!model.supportsMask) removeMaskImage();
+  if (referenceImages.value.length > model.maxReferenceImages) {
+    referenceImages.value.splice(model.maxReferenceImages).forEach(image => URL.revokeObjectURL(image.previewUrl));
+  }
+}
+
+async function loadModelConfigs() {
+  const data = await api.get<{ models: ImageModelConfig[] }>("/api/images/models");
+  modelConfigs.value = data.models;
+  if (!modelConfigs.value.some(item => item.model === form.model)) form.model = modelConfigs.value[0]?.model ?? "";
+  applyModelDefaults();
 }
 
 async function bind() {
@@ -333,6 +262,7 @@ async function bind() {
 
 onMounted(async () => {
   applyTheme();
+  await loadModelConfigs().catch(error => { store.error = error instanceof Error ? error.message : "模型配置加载失败"; });
   historyClockTimer = window.setInterval(() => {
     currentTimeMs.value = Date.now();
   }, 1000);
@@ -379,6 +309,8 @@ watch(
     }, 700);
   }
 );
+
+watch(() => form.model, applyModelDefaults);
 
 watch(
   () => store.jobs.length,
@@ -437,7 +369,7 @@ async function urlToReferenceImage(url: string, name: string, fallbackMimeType?:
 }
 
 function addReferenceImages(images: ReferenceImage[]) {
-  const remaining = Math.max(0, 10 - referenceImages.value.length);
+  const remaining = Math.max(0, referenceLimit.value - referenceImages.value.length);
   const accepted = images.slice(0, remaining);
   images.slice(remaining).forEach((image) => URL.revokeObjectURL(image.previewUrl));
   referenceImages.value = [...referenceImages.value, ...accepted];
@@ -447,7 +379,7 @@ async function handleReferenceUpload(event: Event) {
   const input = event.target as HTMLInputElement;
   const files = Array.from(input.files ?? []);
   const validFiles = files.filter((file) => file.type.startsWith("image/") && file.size <= maxReferenceImageBytes);
-  const remaining = Math.max(0, 10 - referenceImages.value.length);
+  const remaining = Math.max(0, referenceLimit.value - referenceImages.value.length);
   const selected = validFiles.slice(0, remaining);
   const images = await Promise.all(selected.map(fileToReferenceImage));
   addReferenceImages(images);
@@ -490,12 +422,12 @@ function handleReferenceDragLeave(event: DragEvent) {
 async function handleReferenceDrop(event: DragEvent) {
   event.preventDefault();
   isReferenceDragging.value = false;
-  if (!event.dataTransfer || referenceImages.value.length >= 10) return;
+  if (!event.dataTransfer || referenceImages.value.length >= referenceLimit.value) return;
 
   const droppedFiles = Array.from(event.dataTransfer.files ?? [])
     .filter((file) => file.type.startsWith("image/") && file.size <= maxReferenceImageBytes);
   if (droppedFiles.length) {
-    const remaining = Math.max(0, 10 - referenceImages.value.length);
+    const remaining = Math.max(0, referenceLimit.value - referenceImages.value.length);
     const selected = droppedFiles.slice(0, remaining);
     const images = await Promise.all(selected.map(fileToReferenceImage));
     addReferenceImages(images);
@@ -599,25 +531,21 @@ async function generate() {
   previewMode.value = "latest";
   previewImageId.value = null;
   singlePreviewImage.value = null;
-  form.count = Math.max(1, Math.min(10, Number(form.count) || 1));
+  const model = activeModel.value;
+  if (!model) { store.error = "没有可用的图片模型"; return; }
+  form.count = Math.max(1, Math.min(model.maxCount, Number(form.count) || 1));
 
   await store.generate({
     prompt: form.prompt,
     model: form.model,
-    size: upstreamSize.value || "auto",
-    aspectRatio: form.aspectRatio,
+    size: typeof modelParameters.size === "string" ? modelParameters.size : "auto",
     count: form.count,
-    quality: form.model === "gpt-image-2" || form.quality === "auto" ? undefined : form.quality,
-    outputFormat: form.model === "gpt-image-2" ? undefined : form.outputFormat,
-    responseFormat: upstreamResponseFormat.value,
-    extraParams: {
-      size_tier: modelSizeTier[form.model],
-      aspect_ratio: form.aspectRatio,
-      upstream_size: upstreamSize.value || "auto",
-      computed_size: computedSize.value || "auto"
-    },
+    quality: typeof modelParameters.quality === "string" ? modelParameters.quality : undefined,
+    responseFormat: "url",
+    extraParams: {},
+    parameters: { ...modelParameters },
     referenceImages: referenceImages.value.map(({ name, mimeType, file }) => ({ name, mimeType, file })),
-    mask: form.model === "gpt-image-2" && maskImage.value
+    mask: model.supportsMask && maskImage.value
       ? { name: maskImage.value.name, mimeType: "image/png", file: maskImage.value.file }
       : undefined
   });
@@ -625,23 +553,12 @@ async function generate() {
 
 function reuseJob(job: GenerationJob) {
   form.prompt = job.prompt;
-  form.model = ["gpt-image-2-4k", "gpt-image-2"].includes(job.model)
-    ? job.model as ImageModel
-    : "gpt-image-2";
-  form.count = Math.max(1, Math.min(10, Number(job.count) || 1));
-  form.quality = job.quality ?? "auto";
-  form.outputFormat = typeof job.params.output_format === "string"
-    ? job.params.output_format as OutputFormat
-    : "png";
-  const savedAspectRatio = typeof job.params.aspect_ratio === "string" ? job.params.aspect_ratio : "auto";
-  form.customSizeMode = "ratio";
-  form.aspectRatio = aspectRatios.includes(savedAspectRatio as AspectRatioPreset)
-    ? savedAspectRatio as AspectRatioPreset
-    : "auto";
-  form.customAspectRatio = typeof job.params.custom_aspect_ratio === "string" ? job.params.custom_aspect_ratio : "1:1";
-  form.customWidth = typeof job.params.custom_width === "number" ? job.params.custom_width : 1024;
-  form.customHeight = typeof job.params.custom_height === "number" ? job.params.custom_height : 1024;
-  form.responseFormat = upstreamResponseFormat.value;
+  form.model = modelConfigs.value.some(item => item.model === job.model) ? job.model : (modelConfigs.value[0]?.model ?? "");
+  applyModelDefaults();
+  form.count = Math.max(1, Math.min(activeModel.value?.maxCount ?? 1, Number(job.count) || 1));
+  for (const field of activeModel.value?.parameters ?? []) {
+    if (job.params[field.key] != null) modelParameters[field.key] = job.params[field.key];
+  }
 }
 
 function downloadAll() {
@@ -777,7 +694,7 @@ async function copyText(text: string) {
             </span>
           </label>
           <p v-if="store.profile?.availableBalanceUsd" class="muted">
-            sub2api 可用余额：${{ Number(store.profile.availableBalanceUsd).toFixed(2) }}
+            可用余额：${{ Number(store.profile.availableBalanceUsd).toFixed(2) }}
           </p>
         </section>
 
@@ -791,46 +708,22 @@ async function copyText(text: string) {
           <label>
             <span>模型</span>
             <select v-model="form.model">
-              <option value="gpt-image-2-4k">gpt-image-2-4k</option>
-              <option value="gpt-image-2">gpt-image-2</option>
+              <option v-for="model in modelConfigs" :key="model.id" :value="model.model">{{ model.name }}</option>
             </select>
           </label>
-          <label>
-            <span>图片比例</span>
-            <select v-model="form.aspectRatio">
-              <option value="auto">Auto</option>
-              <option value="1:1">1:1</option>
-              <option value="2:3">2:3</option>
-              <option value="3:2">3:2</option>
-              <option value="9:16">9:16</option>
-              <option value="16:9">16:9</option>
+          <label v-for="field in activeModel?.parameters || []" :key="field.key">
+            <span>{{ field.label }}</span>
+            <select v-if="field.type === 'select'" v-model="modelParameters[field.key]">
+              <option v-for="option in field.options || []" :key="option.value" :value="option.value">{{ option.label }}</option>
             </select>
+            <input v-else-if="field.type === 'number'" v-model.number="modelParameters[field.key]" type="number" :placeholder="field.placeholder" />
+            <input v-else v-model="modelParameters[field.key]" type="text" :placeholder="field.placeholder" />
           </label>
-          <div v-if="form.model === 'gpt-image-2-4k'" class="split">
-            <label>
-              <span>质量</span>
-              <select v-model="form.quality">
-                <option value="auto">自动</option>
-                <option value="low">低质量</option>
-                <option value="medium">标准质量</option>
-                <option value="high">高质量</option>
-              </select>
-            </label>
-            <label>
-              <span>输出格式</span>
-              <select v-model="form.outputFormat">
-                <option value="png">PNG</option>
-                <option value="jpeg">JPEG</option>
-                <option value="webp">WEBP</option>
-              </select>
-            </label>
-          </div>
-          <div v-else class="model-format-hint">质量与输出格式由上游结果决定。</div>
           <label>
             <span>数量</span>
-            <input v-model.number="form.count" type="number" min="1" max="10" @change="form.count = Math.max(1, Math.min(10, Number(form.count) || 1))" />
+            <input v-model.number="form.count" type="number" min="1" :max="activeModel?.maxCount || 1" @change="form.count = Math.max(1, Math.min(activeModel?.maxCount || 1, Number(form.count) || 1))" />
           </label>
-          <p v-if="form.model === 'gpt-image-2'" class="muted">预计扣费：${{ estimatedChargeUsd }}（每张 $0.50，失败不扣费）</p>
+          <p class="muted">预计扣费：${{ estimatedChargeUsd }}</p>
         </section>
       </aside>
 
@@ -917,14 +810,14 @@ async function copyText(text: string) {
                 上传参考图
                 <input type="file" accept="image/*" multiple @change="handleReferenceUpload" />
               </label>
-              <label v-if="form.model === 'gpt-image-2'" class="upload-button" :class="{ disabled: !referenceImages.length }">
+              <label v-if="activeModel?.supportsMask" class="upload-button" :class="{ disabled: !referenceImages.length }">
                 <ImagePlus :size="17" />
                 上传 PNG 蒙版
                 <input type="file" accept="image/png,.png" :disabled="!referenceImages.length" @change="handleMaskUpload" />
               </label>
               <span class="muted">可从右侧历史拖入</span>
             </div>
-            <span class="muted">参考图最多 10 张，每张不超过 10MB；蒙版须与首图同尺寸。</span>
+            <span class="muted">参考图最多 {{ referenceLimit }} 张，每张不超过 10MB；蒙版须与首图同尺寸。</span>
           </div>
 
           <div v-if="referenceImages.length" class="reference-grid">
@@ -1130,7 +1023,7 @@ async function copyText(text: string) {
         <div class="doc-body">
           <section v-if="activeDocTab === 'gpt-image-2'" class="doc-section">
             <p><strong>GPT-Image-2：</strong>size 请传画幅比例（如 1:1）。文生图 JSON POST /images/generations（async: true，stream: false）；带参考图/多图叠图/蒙版须 multipart POST /images/edits（image / image[]），JSON generations 传 image URL 无效；GET 轮询取 data.url。</p>
-            <p><strong>计费：</strong>每张固定 $0.50。任务创建前冻结对应额度，生成成功后结算，失败或超时自动释放。</p>
+            <p><strong>计费：</strong>按所选模型后台配置的单张价格计费。任务创建前冻结对应额度，生成成功后结算，失败或超时自动释放。</p>
 
             <h3>接口</h3>
             <ul>

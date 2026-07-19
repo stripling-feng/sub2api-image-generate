@@ -1,0 +1,71 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - heading [level=1] [ref=e3]:
+      - link "Superpowers Brainstorming" [ref=e4] [cursor=pointer]:
+        - /url: https://github.com/obra/superpowers
+    - generic [ref=e5]: Connected
+  - generic [ref=e7]:
+    - heading "图片模型新增 / 编辑界面" [level=2] [ref=e8]
+    - paragraph [ref=e9]: 删除参数 JSON 配置，只增加一个明确的美元单价字段。
+    - generic [ref=e10]:
+      - generic [ref=e11]: 编辑图片模型
+      - generic [ref=e12]:
+        - generic [ref=e13]:
+          - text: 模型服务商
+          - generic [ref=e14]: 沧元算力
+        - generic [ref=e15]:
+          - text: 模型标识
+          - generic [ref=e16]: gpt-image-2-1k
+        - generic [ref=e17]:
+          - text: 显示名称
+          - generic [ref=e18]: GPT Image 2 · 1K
+        - generic [ref=e19]:
+          - text: 上游模型
+          - generic [ref=e20]: gpt-image-2-1k
+        - generic [ref=e21]:
+          - text: 生成路径
+          - generic [ref=e22]: /v1/images/generations
+        - generic [ref=e23]:
+          - text: 编辑路径
+          - generic [ref=e24]: /v1/images/edits
+        - generic [ref=e25]:
+          - text: 单张价格（USD）
+          - generic [ref=e26]:
+            - strong [ref=e27]: "0.50"
+            - generic [ref=e28]: 美元 / 张
+        - generic [ref=e29]:
+          - text: 最大张数
+          - generic [ref=e30]: "10"
+        - generic [ref=e31]:
+          - text: 参考图上限
+          - generic [ref=e32]: "9"
+        - generic [ref=e33]:
+          - text: 状态
+          - generic [ref=e34]: ● 启用
+        - generic [ref=e35]:
+          - text: 预计扣费直接按模型单价计算：4 张 × $0.50 =
+          - strong [ref=e36]: $2.00
+        - generic [ref=e37]:
+          - button "取消" [ref=e38]
+          - button "保存模型" [ref=e39]
+    - generic [ref=e40]:
+      - text: 列表显示
+      - generic [ref=e41]:
+        - generic [ref=e42]:
+          - generic [ref=e43]: 显示名称
+          - generic [ref=e44]: 模型标识
+          - generic [ref=e45]: 服务商
+          - generic [ref=e46]: 单价
+          - generic [ref=e47]: 状态
+        - generic [ref=e48]:
+          - strong [ref=e49]: GPT Image 2 · 1K
+          - code [ref=e50]: gpt-image-2-1k
+          - generic [ref=e51]: 沧元算力
+          - strong [ref=e52]: $0.50 / 张
+          - generic [ref=e53]: ● 启用
+    - generic [ref=e55] [cursor=pointer]:
+      - generic [ref=e56]: ✓
+      - generic [ref=e57]:
+        - heading "采用这个精简布局" [level=3] [ref=e58]
+        - paragraph [ref=e59]: 价格使用独立数值字段，参数 JSON 不再出现在后台。
+  - generic [ref=e60]: Click an option above, then return to the terminal

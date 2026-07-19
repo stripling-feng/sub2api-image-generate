@@ -1,0 +1,175 @@
+- generic [ref=f1e1]:
+  - generic [ref=f1e3]:
+    - complementary [ref=f1e4]:
+      - generic [ref=f1e5]:
+        - generic [ref=f1e6]: FE
+        - generic [ref=f1e7]: Feng AI Admin
+      - menubar [ref=f1e12]:
+        - menuitem "工作台" [ref=f1e13] [cursor=pointer]
+        - menuitem "系统管理" [ref=f1e21]
+        - menuitem "工具管理" [ref=f1e34]
+        - menuitem "模型管理" [expanded] [ref=f1e46]:
+          - menu [ref=f1e57]:
+            - menuitem "模型服务商" [ref=f1e58] [cursor=pointer]
+            - menuitem "图片模型" [ref=f1e64] [cursor=pointer]
+            - menuitem "视频模型" [ref=f1e70] [cursor=pointer]
+    - main [ref=f1e75]:
+      - generic [ref=f1e76]:
+        - generic [ref=f1e78]:
+          - navigation "面包屑" [ref=f1e80]:
+            - generic [ref=f1e81]:
+              - link "首页" [ref=f1e82]
+              - text: /
+            - generic [ref=f1e83]:
+              - link "模型管理" [ref=f1e84]
+              - text: /
+            - link "图片模型" [ref=f1e86]
+          - generic [ref=f1e87]:
+            - button [ref=f1e88] [cursor=pointer]
+            - button [ref=f1e92] [cursor=pointer]
+            - button "系 系统管理员 系统用户" [ref=f1e97] [cursor=pointer]:
+              - generic [ref=f1e98]:
+                - generic [ref=f1e99]: 系
+                - generic [ref=f1e100]:
+                  - generic [ref=f1e101]: 系统管理员
+                  - generic [ref=f1e102]: 系统用户
+        - generic [ref=f1e104]:
+          - generic [ref=f1e105]:
+            - button "控制台" [ref=f1e106] [cursor=pointer]
+            - button "图片模型" [ref=f1e109] [cursor=pointer]
+          - button [ref=f1e117] [cursor=pointer]
+        - generic [ref=f1e122]:
+          - generic [ref=f1e123]:
+            - generic [ref=f1e124]:
+              - heading "图片模型" [level=1] [ref=f1e125]
+              - paragraph [ref=f1e126]: 管理工作台可用模型、上游标识和生成参数。
+            - button "新增模型" [ref=f1e127] [cursor=pointer]
+          - generic [ref=f1e129]:
+            - textbox "搜索显示名称或模型标识" [ref=f1e132]
+            - button "查询" [ref=f1e133] [cursor=pointer]
+            - button "重置" [ref=f1e135] [cursor=pointer]
+          - generic [ref=f1e137]:
+            - generic [ref=f1e139]:
+              - table [ref=f1e141]:
+                - rowgroup [ref=f1e150]:
+                  - row [ref=f1e151]:
+                    - columnheader "显示名称" [ref=f1e152]
+                    - columnheader "模型标识" [ref=f1e154]
+                    - columnheader "上游模型" [ref=f1e156]
+                    - columnheader "服务商" [ref=f1e158]
+                    - columnheader "单价" [ref=f1e160]
+                    - columnheader "状态" [ref=f1e162]
+                    - columnheader "操作" [ref=f1e164]
+              - table [ref=f1e170]:
+                - rowgroup [ref=f1e179]:
+                  - row [ref=f1e291]:
+                    - cell "GPT Image 2" [ref=f1e181]
+                    - cell "gpt-image-2" [ref=f1e183]
+                    - cell "cy-img1-gpt-image-2" [ref=f1e186]
+                    - cell "沧元算力" [ref=f1e189]
+                    - cell "$0.50 / 张" [ref=f1e292]
+                    - cell "启用" [ref=f1e193]
+                    - cell [ref=f1e196]:
+                      - generic [ref=f1e198]:
+                        - button "编辑" [ref=f1e199] [cursor=pointer]
+                        - button "删除" [ref=f1e201] [cursor=pointer]
+                  - row [ref=f1e293]:
+                    - cell "GPT Image 2 · 1K" [ref=f1e204]
+                    - cell "gpt-image-2-1k" [ref=f1e206]
+                    - cell "gpt-image-2-1k" [ref=f1e209]
+                    - cell "沧元算力" [ref=f1e212]
+                    - cell "$0.50 / 张" [ref=f1e294]
+                    - cell "启用" [ref=f1e216]
+                    - cell [ref=f1e219]:
+                      - generic [ref=f1e221]:
+                        - button "编辑" [ref=f1e222] [cursor=pointer]
+                        - button "删除" [ref=f1e224] [cursor=pointer]
+                  - row [ref=f1e295]:
+                    - cell "GPT Image 2 · 2K" [ref=f1e227]
+                    - cell "gpt-image-2-2k" [ref=f1e229]
+                    - cell "gpt-image-2-2k" [ref=f1e232]
+                    - cell "沧元算力" [ref=f1e235]
+                    - cell "$0.50 / 张" [ref=f1e296]
+                    - cell "启用" [ref=f1e239]
+                    - cell [ref=f1e242]:
+                      - generic [ref=f1e244]:
+                        - button "编辑" [ref=f1e245] [cursor=pointer]
+                        - button "删除" [ref=f1e247] [cursor=pointer]
+                  - row [ref=f1e297]:
+                    - cell "GPT Image 2 · 4K" [ref=f1e250]
+                    - cell "gpt-image-2-4k" [ref=f1e252]
+                    - cell "gpt-image-2-4k" [ref=f1e255]
+                    - cell "沧元算力" [ref=f1e258]
+                    - cell "$0.50 / 张" [ref=f1e298]
+                    - cell "启用" [ref=f1e262]
+                    - cell [ref=f1e265]:
+                      - generic [ref=f1e267]:
+                        - button "编辑" [ref=f1e268] [cursor=pointer]
+                        - button "删除" [ref=f1e270] [cursor=pointer]
+            - generic [ref=f1e272]:
+              - generic [ref=f1e273]: 共 4 个图片模型
+              - generic [ref=f1e274]:
+                - generic [ref=f1e277] [cursor=pointer]:
+                  - generic:
+                    - combobox [ref=f1e279]
+                    - generic [ref=f1e280]: 10条/页
+                - button "上一页" [disabled] [ref=f1e285]
+                - list [ref=f1e286]:
+                  - listitem "第 1 页" [ref=f1e287]: "1"
+                - button "下一页" [disabled] [ref=f1e288]
+        - generic [ref=f1e289]: "&amp;copy; 2026 Feng AI Admin. All rights reserved."
+  - dialog "新增图片模型" [ref=f1e300]:
+    - generic [active] [ref=f1e301]:
+      - banner [ref=f1e302]:
+        - heading "新增图片模型" [level=2] [ref=f1e303]
+        - button "关闭此对话框" [ref=f1e304] [cursor=pointer]
+      - generic [ref=f1e309]:
+        - generic [ref=f1e310]:
+          - generic [ref=f1e311]: "* 模型服务商"
+          - generic [ref=f1e314] [cursor=pointer]:
+            - generic:
+              - combobox "* 模型服务商" [ref=f1e316]
+              - generic [ref=f1e317]: 沧元算力
+        - generic [ref=f1e322]:
+          - generic [ref=f1e323]: "* 模型标识"
+          - textbox "* 模型标识" [ref=f1e327]:
+            - /placeholder: gpt-image-2-1k
+        - generic [ref=f1e328]:
+          - generic [ref=f1e329]: "* 显示名称"
+          - textbox "* 显示名称" [ref=f1e333]
+        - generic [ref=f1e334]:
+          - generic [ref=f1e335]: 上游模型
+          - textbox "上游模型" [ref=f1e339]
+        - generic [ref=f1e340]:
+          - generic [ref=f1e341]: 生成路径
+          - textbox "生成路径" [ref=f1e345]: /v1/images/generations
+        - generic [ref=f1e346]:
+          - generic [ref=f1e347]: 编辑路径
+          - textbox "编辑路径" [ref=f1e351]: /v1/images/edits
+        - generic [ref=f1e352]:
+          - generic [ref=f1e353]: "* 单张价格（USD）"
+          - generic [ref=f1e355]:
+            - button "减少数值" [ref=f1e356] [cursor=pointer]
+            - button "增加数值" [ref=f1e360] [cursor=pointer]
+            - spinbutton "* 单张价格（USD）" [ref=f1e366]: "0.5000"
+        - generic [ref=f1e367]:
+          - generic [ref=f1e368]: 异步模式
+          - generic [ref=f1e370]:
+            - switch "异步模式" [checked]
+        - generic [ref=f1e373]:
+          - generic [ref=f1e374]: 支持蒙版
+          - generic [ref=f1e376]:
+            - switch "支持蒙版" [checked]
+        - generic [ref=f1e379]:
+          - generic [ref=f1e380]: 状态
+          - generic [ref=f1e382]:
+            - switch "状态" [checked]
+        - generic [ref=f1e385]:
+          - generic [ref=f1e386]: 排序
+          - generic [ref=f1e388]:
+            - button "减少数值" [ref=f1e389] [cursor=pointer]
+            - button "增加数值" [ref=f1e393] [cursor=pointer]
+            - spinbutton "排序" [ref=f1e399]: "1"
+      - contentinfo [ref=f1e400]:
+        - button "取消" [ref=f1e401] [cursor=pointer]
+        - button "确定" [ref=f1e403] [cursor=pointer]

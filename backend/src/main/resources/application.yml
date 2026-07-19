@@ -1,0 +1,75 @@
+server:
+  port: 10102
+  tomcat:
+    threads:
+      max: 500
+      min-spare: 50
+    max-connections: 20000
+    accept-count: 200
+
+spring:
+  profiles:
+    default: dev
+  output:
+    ansi:
+      enabled: ALWAYS
+  servlet:
+    multipart:
+      max-file-size: 30MB
+      max-request-size: 130MB
+  application:
+    name: feng-admin
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: Asia/Shanghai
+
+mybatis-plus:
+  configuration:
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+  global-config:
+    db-config:
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+sa-token:
+  token-name: Authorization
+  token-prefix: Bearer
+  timeout: 3600
+  active-timeout: -1
+  is-concurrent: true
+  is-share: true
+  is-read-cookie: false
+  is-read-header: true
+  is-log: false
+
+cors:
+  allowed-origins:
+
+xss:
+  exclude-urls:
+    - /api/system/upload-files/content/**
+
+logging:
+  file:
+    path: ./logs
+
+image:
+  session-days: ${SESSION_DAYS:30}
+  cookie-secure: ${IMAGE_COOKIE_SECURE:false}
+  upload-dir: ${UPLOAD_DIR:./uploads}
+  billing-account-id: ${SUB2API_BILLING_ACCOUNT_ID:}
+  charge-on-failure: ${IMAGE2_CHARGE_ON_FAILURE:false}
+  request-timeout-ms: ${IMAGE_REQUEST_TIMEOUT_MS:900000}
+  poll-interval-ms: ${IMAGE_TASK_POLL_INTERVAL_MS:2000}
+  poll-max-duration-ms: ${IMAGE_TASK_MAX_DURATION_MS:1800000}
+  poll-lease-ms: ${IMAGE_TASK_LEASE_MS:60000}
+  cleanup-interval-ms: ${IMAGE_CLEANUP_INTERVAL_MS:3600000}
+  upstream-base-url: ${UPSTREAM_BASE_URL:}
+
+video:
+  upload-public-base-url: ${VIDEO_UPLOAD_PUBLIC_BASE_URL:https://image.tcboys.de}
+  request-timeout-ms: ${VIDEO_REQUEST_TIMEOUT_MS:900000}
+  poll-interval-ms: ${VIDEO_TASK_POLL_INTERVAL_MS:5000}
+  poll-max-duration-ms: ${VIDEO_TASK_MAX_DURATION_MS:7200000}
+  poll-lease-ms: ${VIDEO_TASK_LEASE_MS:60000}

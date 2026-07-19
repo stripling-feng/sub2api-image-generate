@@ -68,7 +68,7 @@ const activeDocTab = ref<"gpt-image-2" | "gpt-image-2-4k">("gpt-image-2");
                   <li><strong>size：</strong>请传画幅比例，例如 1:1、3:2、2:3。</li>
                   <li><strong>文生图：</strong>JSON POST /images/generations。</li>
                   <li><strong>参考图 / 多图叠图：</strong>multipart POST /images/edits，字段使用 image 或 image[]。</li>
-                  <li><strong>计费：</strong>每张固定扣除 $0.50；提交前冻结额度，成功后结算，失败自动释放。</li>
+                  <li><strong>计费：</strong>按所选模型后台配置的单张价格扣除；提交前冻结额度，成功后结算，失败自动释放。</li>
                 </ul>
               </div>
 

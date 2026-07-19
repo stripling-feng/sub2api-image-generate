@@ -118,253 +118,104 @@ function initThreeParticles() {
   };
 }
 
-function createPlanetTexture() {
-  const canvas = document.createElement("canvas");
-  canvas.width = 1024;
-  canvas.height = 512;
-  const context = canvas.getContext("2d");
-  if (!context) return null;
-
-  const base = context.createLinearGradient(0, 0, canvas.width, canvas.height);
-  base.addColorStop(0, "#72f4ff");
-  base.addColorStop(0.18, "#236dff");
-  base.addColorStop(0.46, "#132178");
-  base.addColorStop(0.72, "#1b145d");
-  base.addColorStop(1, "#5c3dff");
-  context.fillStyle = base;
-  context.fillRect(0, 0, canvas.width, canvas.height);
-
-  context.globalCompositeOperation = "screen";
-  context.strokeStyle = "rgba(126, 239, 255, 0.24)";
-  context.lineWidth = 1;
-  for (let x = 24; x < canvas.width; x += 58) {
-    context.beginPath();
-    context.moveTo(x, 0);
-    context.bezierCurveTo(x + 34, 140, x - 38, 320, x + 18, canvas.height);
-    context.stroke();
-  }
-  for (let y = 36; y < canvas.height; y += 48) {
-    context.beginPath();
-    context.moveTo(0, y);
-    context.bezierCurveTo(260, y - 18, 560, y + 22, canvas.width, y - 8);
-    context.stroke();
-  }
-
-  context.strokeStyle = "rgba(255,255,255,0.3)";
-  context.lineWidth = 3;
-  context.lineCap = "round";
-  for (let i = 0; i < 24; i += 1) {
-    const y = 38 + Math.random() * 420;
-    const x = Math.random() * 900;
-    context.beginPath();
-    context.moveTo(x - 120, y);
-    context.bezierCurveTo(x - 40, y - 34, x + 90, y + 28, x + 240, y - 18);
-    context.stroke();
-  }
-
-  for (let i = 0; i < 48; i += 1) {
-    const x = Math.random() * canvas.width;
-    const y = Math.random() * canvas.height;
-    const radius = 16 + Math.random() * 58;
-    const glow = context.createRadialGradient(x, y, 0, x, y, radius);
-    glow.addColorStop(0, "rgba(126,239,255,0.45)");
-    glow.addColorStop(0.32, "rgba(79,125,255,0.18)");
-    glow.addColorStop(1, "rgba(0,0,0,0)");
-    context.fillStyle = glow;
-    context.beginPath();
-    context.arc(x, y, radius, 0, Math.PI * 2);
-    context.fill();
-  }
-
-  context.fillStyle = "rgba(255,255,255,0.72)";
-  for (let i = 0; i < 90; i += 1) {
-    context.beginPath();
-    context.arc(Math.random() * canvas.width, Math.random() * canvas.height, 0.8 + Math.random() * 1.6, 0, Math.PI * 2);
-    context.fill();
-  }
-
-  context.globalCompositeOperation = "source-over";
-  const highlight = context.createRadialGradient(244, 118, 0, 244, 118, 360);
-  highlight.addColorStop(0, "rgba(255,255,255,0.34)");
-  highlight.addColorStop(0.52, "rgba(126,239,255,0.08)");
-  highlight.addColorStop(1, "rgba(255,255,255,0)");
-  context.fillStyle = highlight;
-  context.fillRect(0, 0, canvas.width, canvas.height);
-
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.wrapS = THREE.RepeatWrapping;
-  texture.wrapT = THREE.ClampToEdgeWrapping;
-  return texture;
-}
-
-function createCloudTexture() {
-  const canvas = document.createElement("canvas");
-  canvas.width = 1024;
-  canvas.height = 512;
-  const context = canvas.getContext("2d");
-  if (!context) return null;
-
-  context.clearRect(0, 0, canvas.width, canvas.height);
-  context.strokeStyle = "rgba(190,248,255,0.42)";
-  context.lineWidth = 7;
-  context.lineCap = "round";
-
-  for (let i = 0; i < 32; i += 1) {
-    const y = 46 + Math.random() * 420;
-    const x = Math.random() * 920;
-    context.beginPath();
-    context.moveTo(x - 120, y);
-    context.bezierCurveTo(x - 42, y - 18, x + 82, y + 16, x + 220, y - 10);
-    context.stroke();
-  }
-
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.wrapS = THREE.RepeatWrapping;
-  texture.wrapT = THREE.ClampToEdgeWrapping;
-  return texture;
-}
-
 function initThreeOrb() {
   const mount = orbMount.value;
   if (!mount) return;
 
+  const mobile = window.matchMedia("(max-width: 767px)").matches;
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const nodeCount = mobile ? 14 : 22;
   const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
-  camera.position.set(0, 0.35, 6.6);
+  const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 50);
+  camera.position.z = 6;
 
   const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, mobile ? 1.2 : 1.6));
+  renderer.setClearColor(0x000000, 0);
+  renderer.domElement.className = "creative-constellation-canvas";
   mount.appendChild(renderer.domElement);
 
   const root = new THREE.Group();
-  const planetGroup = new THREE.Group();
-  root.add(planetGroup);
+  root.position.set(0.45, 0.05, 0);
+  root.rotation.z = -0.12;
   scene.add(root);
 
-  scene.add(new THREE.AmbientLight(0x88ccff, 0.85));
-  const keyLight = new THREE.PointLight(0x9ff7ff, 3.2, 16);
-  keyLight.position.set(-3.4, 3.1, 4.2);
-  scene.add(keyLight);
-  const rimLight = new THREE.PointLight(0x8b5cf6, 2.2, 14);
-  rimLight.position.set(4, -1.8, 3);
-  scene.add(rimLight);
+  const positions = new Float32Array(nodeCount * 3);
+  const colors = new Float32Array(nodeCount * 3);
+  const palette = [new THREE.Color("#d9e8ff"), new THREE.Color("#6fcaff"), new THREE.Color("#aa8cff")];
 
-  const planetTexture = createPlanetTexture();
-  const cloudTexture = createCloudTexture();
-  const planet = new THREE.Mesh(
-    new THREE.SphereGeometry(1.86, 128, 96),
-    new THREE.MeshStandardMaterial({
-      map: planetTexture ?? undefined,
-      color: 0xffffff,
-      emissive: 0x1238ff,
-      emissiveIntensity: 0.34,
-      metalness: 0.18,
-      roughness: 0.3
-    })
-  );
-  planetGroup.add(planet);
-
-  const wire = new THREE.Mesh(
-    new THREE.SphereGeometry(1.878, 64, 48),
-    new THREE.MeshBasicMaterial({
-      color: 0xbdf8ff,
-      wireframe: true,
-      transparent: true,
-      opacity: 0.11,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false
-    })
-  );
-  planetGroup.add(wire);
-
-  const clouds = new THREE.Mesh(
-    new THREE.SphereGeometry(1.895, 96, 64),
-    new THREE.MeshBasicMaterial({
-      map: cloudTexture ?? undefined,
-      color: 0xffffff,
-      transparent: true,
-      opacity: 0.22,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false
-    })
-  );
-  planetGroup.add(clouds);
-
-  const atmosphere = new THREE.Mesh(
-    new THREE.SphereGeometry(2.08, 64, 48),
-    new THREE.MeshBasicMaterial({
-      color: 0x00e5ff,
-      transparent: true,
-      opacity: 0.18,
-      side: THREE.BackSide,
-      blending: THREE.AdditiveBlending
-    })
-  );
-  planetGroup.add(atmosphere);
-
-  const innerGlow = new THREE.Mesh(
-    new THREE.SphereGeometry(1.76, 64, 48),
-    new THREE.MeshBasicMaterial({
-      color: 0x4f7dff,
-      transparent: true,
-      opacity: 0.16,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false
-    })
-  );
-  planetGroup.add(innerGlow);
-
-  const auraGeometry = new THREE.BufferGeometry();
-  const auraPositions = new Float32Array(240);
-  for (let i = 0; i < auraPositions.length; i += 3) {
-    const angle = Math.random() * Math.PI * 2;
-    const height = (Math.random() - 0.5) * 1.8;
-    const radius = 2.06 + Math.random() * 0.36;
-    auraPositions[i] = Math.cos(angle) * radius;
-    auraPositions[i + 1] = height;
-    auraPositions[i + 2] = Math.sin(angle) * radius * 0.62;
+  for (let index = 0; index < nodeCount; index += 1) {
+    const angle = index * 0.74;
+    const radius = 0.68 + index * 0.075;
+    positions[index * 3] = Math.cos(angle) * radius * 1.18;
+    positions[index * 3 + 1] = Math.sin(angle) * radius * 0.72;
+    positions[index * 3 + 2] = Math.sin(index * 1.7) * 0.34;
+    const color = palette[index % palette.length];
+    colors[index * 3] = color.r;
+    colors[index * 3 + 1] = color.g;
+    colors[index * 3 + 2] = color.b;
   }
-  auraGeometry.setAttribute("position", new THREE.BufferAttribute(auraPositions, 3));
-  const auraDust = new THREE.Points(
-    auraGeometry,
-    new THREE.PointsMaterial({
-      color: 0x7eefff,
-      size: 0.022,
-      transparent: true,
-      opacity: 0.28,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false
-    })
-  );
-  planetGroup.add(auraDust);
 
-  const starGeometry = new THREE.BufferGeometry();
-  const starPositions = new Float32Array(360);
-  for (let i = 0; i < starPositions.length; i += 3) {
-    starPositions[i] = (Math.random() - 0.5) * 7;
-    starPositions[i + 1] = (Math.random() - 0.5) * 5.2;
-    starPositions[i + 2] = (Math.random() - 0.5) * 3.2;
+  const nodeGeometry = new THREE.BufferGeometry();
+  nodeGeometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  nodeGeometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  const nodeMaterial = new THREE.PointsMaterial({
+    size: mobile ? 0.075 : 0.085,
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.82,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+  });
+  root.add(new THREE.Points(nodeGeometry, nodeMaterial));
+
+  const linePositions: number[] = [];
+  const connect = (from: number, to: number) => {
+    for (const index of [from, to]) {
+      linePositions.push(positions[index * 3], positions[index * 3 + 1], positions[index * 3 + 2]);
+    }
+  };
+  for (let index = 0; index < nodeCount - 1; index += 1) {
+    connect(index, index + 1);
+    if (index % 4 === 0 && index + 3 < nodeCount) connect(index, index + 3);
   }
-  starGeometry.setAttribute("position", new THREE.BufferAttribute(starPositions, 3));
-  const stars = new THREE.Points(
-    starGeometry,
-    new THREE.PointsMaterial({
-      color: 0x9ff7ff,
-      size: 0.018,
-      transparent: true,
-      opacity: 0.65,
-      blending: THREE.AdditiveBlending
-    })
-  );
-  scene.add(stars);
+
+  const lineGeometry = new THREE.BufferGeometry();
+  lineGeometry.setAttribute("position", new THREE.Float32BufferAttribute(linePositions, 3));
+  const lineMaterial = new THREE.LineBasicMaterial({
+    color: 0x79bfff,
+    transparent: true,
+    opacity: 0.2,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+  });
+  root.add(new THREE.LineSegments(lineGeometry, lineMaterial));
+
+  const dustCount = mobile ? 28 : 54;
+  const dustPositions = new Float32Array(dustCount * 3);
+  for (let index = 0; index < dustCount; index += 1) {
+    dustPositions[index * 3] = Math.sin(index * 12.9898) * 2.9;
+    dustPositions[index * 3 + 1] = Math.sin(index * 7.233 + 1.4) * 2.05;
+    dustPositions[index * 3 + 2] = Math.cos(index * 4.771) * 1.2;
+  }
+  const dustGeometry = new THREE.BufferGeometry();
+  dustGeometry.setAttribute("position", new THREE.BufferAttribute(dustPositions, 3));
+  const dustMaterial = new THREE.PointsMaterial({
+    color: 0x9fcfff,
+    size: 0.025,
+    transparent: true,
+    opacity: 0.32,
+    depthWrite: false
+  });
+  const dust = new THREE.Points(dustGeometry, dustMaterial);
+  root.add(dust);
 
   const resize = () => {
     const rect = mount.getBoundingClientRect();
-    const size = Math.max(320, Math.floor(Math.min(rect.width || 620, rect.height || 620)));
-    renderer.setSize(size, size, false);
-    camera.aspect = 1;
+    const width = Math.max(300, Math.floor(rect.width || 620));
+    const height = Math.max(240, Math.floor(rect.height || 520));
+    renderer.setSize(width, height, false);
+    camera.aspect = width / height;
     camera.updateProjectionMatrix();
   };
   resize();
@@ -372,26 +223,19 @@ function initThreeOrb() {
 
   let frame = 0;
   let lastTime = performance.now();
-  let elapsedTime = 0;
+  let elapsed = 0;
+  const motionScale = reducedMotion ? 0.2 : 1;
   const animate = () => {
     const now = performance.now();
     const delta = Math.min((now - lastTime) / 1000, 0.033);
     lastTime = now;
-    elapsedTime += delta;
-    const speed = isOrbActive.value ? 2.9 : 1;
+    elapsed += delta;
     frame = window.requestAnimationFrame(animate);
-    planet.rotation.y += delta * 0.28 * speed;
-    planet.rotation.x = Math.sin(elapsedTime * 0.42) * 0.12;
-    wire.rotation.y -= delta * 0.18 * speed;
-    wire.rotation.x = -planet.rotation.x * 0.5;
-    clouds.rotation.y += delta * 0.34 * speed;
-    innerGlow.rotation.y += delta * 0.12;
-    atmosphere.rotation.y += delta * 0.16;
-    auraDust.rotation.y -= delta * 0.28 * speed;
-    auraDust.rotation.x = Math.sin(elapsedTime * 0.36) * 0.08;
-    stars.rotation.y -= delta * 0.035;
-    root.rotation.y += ((isOrbActive.value ? 0.12 : 0.02) - root.rotation.y) * 0.025;
-    root.rotation.x += ((isOrbActive.value ? -0.06 : 0.01) - root.rotation.x) * 0.025;
+    root.rotation.y += delta * 0.055 * motionScale;
+    root.rotation.x = Math.sin(elapsed * 0.3) * 0.04;
+    dust.rotation.z -= delta * 0.018 * motionScale;
+    nodeMaterial.opacity = 0.72 + Math.sin(elapsed * 1.1) * 0.1;
+    lineMaterial.opacity = 0.16 + Math.sin(elapsed * 0.75) * 0.05;
     renderer.render(scene, camera);
   };
   animate();
@@ -399,19 +243,12 @@ function initThreeOrb() {
   cleanupOrb = () => {
     window.cancelAnimationFrame(frame);
     window.removeEventListener("resize", resize);
-    scene.traverse((object) => {
-      if (object instanceof THREE.Mesh || object instanceof THREE.Points) {
-        object.geometry.dispose();
-        const material = object.material;
-        if (Array.isArray(material)) {
-          material.forEach((item) => item.dispose());
-        } else {
-          material.dispose();
-        }
-      }
-    });
-    planetTexture?.dispose();
-    cloudTexture?.dispose();
+    nodeGeometry.dispose();
+    nodeMaterial.dispose();
+    lineGeometry.dispose();
+    lineMaterial.dispose();
+    dustGeometry.dispose();
+    dustMaterial.dispose();
     renderer.dispose();
     renderer.domElement.remove();
   };
@@ -422,7 +259,7 @@ function handleOrbMove(event: MouseEvent) {
   const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
   const mouseX = (event.clientX - rect.left) / rect.width - 0.5;
   const mouseY = (event.clientY - rect.top) / rect.height - 0.5;
-  orbTransform.value = `rotateX(${(-mouseY * 16).toFixed(2)}deg) rotateY(${(mouseX * 24).toFixed(2)}deg)`;
+  orbTransform.value = `rotateX(${(-mouseY * 8).toFixed(2)}deg) rotateY(${(mouseX * 12).toFixed(2)}deg)`;
 }
 
 function resetOrbMove() {
@@ -900,32 +737,21 @@ onUnmounted(() => {
 }
 
 .orb-stage {
+  position: relative;
   display: flex;
   justify-content: flex-end;
+  min-width: 0;
   animation: scaleIn 1s 100ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .hero-orb {
   position: relative;
-  width: min(42vw, 720px);
-  min-width: 520px;
-  aspect-ratio: 1;
-  border-radius: 999px;
+  width: min(44vw, 700px);
+  min-width: 560px;
+  aspect-ratio: 1.15;
+  margin-right: clamp(-132px, -6vw, -60px);
   transform-style: preserve-3d;
-  transition: transform 180ms ease-out;
-}
-
-.hero-orb::before {
-  position: absolute;
-  inset: 10%;
-  content: "";
-  border-radius: inherit;
-  background:
-    radial-gradient(circle at 50% 50%, rgba(0, 229, 255, 0.28), transparent 56%),
-    radial-gradient(circle at 46% 42%, rgba(139, 92, 246, 0.24), transparent 62%);
-  filter: blur(34px);
-  opacity: 0.92;
-  transform: translateZ(-1px);
+  transition: transform 240ms ease-out;
 }
 
 .orbital-system {
@@ -933,316 +759,23 @@ onUnmounted(() => {
   inset: 0;
   display: grid;
   place-items: center;
-  border-radius: inherit;
   overflow: visible;
 }
 
 .orbital-system :deep(canvas) {
+  position: absolute;
+  inset: 0;
   width: 100% !important;
   height: 100% !important;
   display: block;
-  filter: drop-shadow(0 0 42px rgba(0, 229, 255, 0.32));
+  opacity: 0.7;
+  filter: drop-shadow(0 0 24px rgba(86, 171, 255, 0.2));
+  transition: opacity 240ms ease, filter 240ms ease;
 }
 
 .hero-orb.is-active .orbital-system :deep(canvas) {
-  filter:
-    drop-shadow(0 0 52px rgba(0, 229, 255, 0.5))
-    drop-shadow(0 0 86px rgba(139, 92, 246, 0.32));
-}
-
-.hero-orb.is-active .ring-a {
-  animation-duration: 8s;
-}
-
-.hero-orb.is-active .ring-b {
-  animation-duration: 11s;
-}
-
-.hero-orb.is-active .halo-a {
-  animation-duration: 3.8s;
-}
-
-.hero-orb.is-active .halo-b {
-  animation-duration: 5.2s;
-}
-
-.hero-orb.is-active .halo-c {
-  animation-duration: 3.2s;
-}
-
-.orb-ring {
-  position: absolute;
-  border: 1px solid rgba(0, 229, 255, 0.32);
-  border-radius: inherit;
-  box-shadow: 0 0 46px rgba(79, 125, 255, 0.18);
-}
-
-.ring-a {
-  inset: 3%;
-  animation: spin 30s linear infinite;
-}
-
-.ring-b {
-  inset: 12%;
-  border-color: rgba(139, 92, 246, 0.35);
-  animation: spinReverse 42s linear infinite;
-}
-
-.orb-core {
-  position: absolute;
-  inset: 17%;
-  overflow: hidden;
-  border-radius: inherit;
-  background:
-    radial-gradient(circle at 30% 24%, rgba(255, 255, 255, 0.98), rgba(0, 229, 255, 0.56) 12%, transparent 24%),
-    radial-gradient(circle at 62% 68%, rgba(232, 121, 249, 0.35), transparent 24%),
-    radial-gradient(circle at 50% 50%, rgba(0, 229, 255, 0.28), rgba(79, 125, 255, 0.18) 42%, rgba(139, 92, 246, 0.16) 61%, rgba(5, 8, 22, 0.2) 74%);
-  box-shadow:
-    inset 0 0 48px rgba(255, 255, 255, 0.08),
-    inset 0 -34px 70px rgba(5, 8, 22, 0.34),
-    0 0 150px rgba(79, 125, 255, 0.58),
-    0 0 240px rgba(0, 229, 255, 0.24);
-  backface-visibility: visible;
-  transform-style: preserve-3d;
-  will-change: transform, filter;
-  animation: coreGlow 8s ease-in-out infinite;
-}
-
-.orb-core::before,
-.orb-core::after {
-  position: absolute;
-  content: "";
-  border-radius: inherit;
-  pointer-events: none;
-  transform-style: preserve-3d;
-}
-
-.orb-core::before {
-  inset: -18%;
-  opacity: 0.72;
-  background:
-    radial-gradient(ellipse at 28% 30%, rgba(255, 255, 255, 0.36), transparent 21%),
-    conic-gradient(from 20deg, rgba(0, 229, 255, 0), rgba(0, 229, 255, 0.42), rgba(139, 92, 246, 0.24), rgba(79, 125, 255, 0), rgba(0, 229, 255, 0.42), rgba(0, 229, 255, 0)),
-    repeating-linear-gradient(92deg, transparent 0 24px, rgba(255, 255, 255, 0.13) 25px, transparent 27px);
-  filter: blur(0.2px);
-  mix-blend-mode: screen;
-  animation: surfaceFlow 16s linear infinite;
-}
-
-.orb-core::after {
-  inset: 5%;
-  opacity: 0.62;
-  background:
-    radial-gradient(ellipse at 30% 22%, rgba(255, 255, 255, 0.44), transparent 18%),
-    repeating-radial-gradient(ellipse at center, transparent 0 26px, rgba(255, 255, 255, 0.12) 28px, transparent 31px),
-    repeating-linear-gradient(90deg, transparent 0 35px, rgba(0, 229, 255, 0.16) 37px, transparent 40px);
-  mask-image: radial-gradient(circle at center, black 0 64%, transparent 72%);
-  mix-blend-mode: screen;
-  animation: latitudeRoll 12s linear infinite reverse;
-}
-
-.hero-orb.is-active .orb-core {
-  animation: coreGlow 2.4s ease-in-out infinite, orb3dTumble 5.8s linear infinite;
-}
-
-.hero-orb.is-active .orb-core::before {
-  animation-duration: 5.4s;
-}
-
-.hero-orb.is-active .orb-core::after {
-  animation-duration: 4.2s;
-}
-
-.orb-glass {
-  position: absolute;
-  inset: 19%;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: inherit;
-  background: rgba(255, 255, 255, 0.035);
-  backdrop-filter: blur(12px);
-}
-
-.hero-orb.is-active .orb-glass {
-  animation: glassSpin 12s linear infinite;
-}
-
-.orb-pulse {
-  position: absolute;
-  inset: 30%;
-  border-radius: inherit;
-  background: rgba(0, 229, 255, 0.2);
-  filter: blur(28px);
-  animation: pulseOrb 4.8s ease-in-out infinite;
-}
-
-.hero-orb.is-active .orb-pulse {
-  animation-duration: 2.4s;
-}
-
-.orb-halo {
-  position: absolute;
-  border-radius: 999px;
-  border: 1px solid transparent;
-  transform-style: preserve-3d;
-  mix-blend-mode: screen;
-}
-
-.halo-a {
-  inset: 9%;
-  border-top-color: rgba(255, 255, 255, 0.42);
-  border-right-color: rgba(0, 229, 255, 0.78);
-  border-bottom-color: rgba(79, 125, 255, 0.22);
-  box-shadow: 0 0 38px rgba(0, 229, 255, 0.26);
-  transform: rotateX(68deg) rotateZ(-18deg);
-  animation: haloSpinA 9s linear infinite;
-}
-
-.halo-b {
-  inset: 16%;
-  border-left-color: rgba(139, 92, 246, 0.62);
-  border-bottom-color: rgba(0, 229, 255, 0.62);
-  box-shadow: 0 0 34px rgba(139, 92, 246, 0.24);
-  transform: rotateY(64deg) rotateZ(28deg);
-  animation: haloSpinB 13s linear infinite;
-}
-
-.halo-c {
-  inset: 24%;
-  border-top-color: rgba(255, 255, 255, 0.26);
-  border-left-color: rgba(0, 229, 255, 0.56);
-  transform: rotateX(74deg) rotateZ(82deg);
-  animation: haloSpinC 7s linear infinite reverse;
-}
-
-.orb-scan {
-  position: absolute;
-  left: 18%;
-  right: 18%;
-  top: 14%;
-  height: 72%;
-  overflow: hidden;
-  border-radius: 999px;
-  mask-image: radial-gradient(ellipse at center, black 0 58%, transparent 70%);
-  transform: rotate(-14deg);
-}
-
-.hero-orb.is-active .orb-scan {
-  animation: scanDiscSpin 7s linear infinite;
-}
-
-.orb-scan::before {
-  position: absolute;
-  inset: -40% 0 auto;
-  height: 38%;
-  content: "";
-  background: linear-gradient(180deg, transparent, rgba(255, 255, 255, 0.36), rgba(0, 229, 255, 0.44), transparent);
-  filter: blur(2px);
-  animation: scanSweep 3.7s ease-in-out infinite;
-}
-
-.hero-orb.is-active .orb-scan::before {
-  animation-duration: 1.9s;
-}
-
-.orb-hotspot {
-  position: absolute;
-  inset: 42%;
-  border-radius: 999px;
-  background: #ffffff;
-  box-shadow:
-    0 0 22px rgba(255, 255, 255, 0.95),
-    0 0 58px rgba(0, 229, 255, 0.9),
-    0 0 110px rgba(139, 92, 246, 0.55);
-  animation: hotspotPulse 2.4s ease-in-out infinite;
-}
-
-.hero-orb.is-active .orb-hotspot {
-  animation-duration: 1.15s;
-}
-
-.satellite {
-  position: absolute;
-  width: 10px;
-  height: 10px;
-  border-radius: 999px;
-  background: #fff;
-  box-shadow: 0 0 20px rgba(0, 229, 255, 0.95), 0 0 48px rgba(79, 125, 255, 0.5);
-}
-
-.satellite-a {
-  left: 17%;
-  top: 29%;
-  animation: satellitePulse 2.8s ease-in-out infinite;
-}
-
-.satellite-b {
-  right: 20%;
-  top: 19%;
-  background: #00e5ff;
-  animation: satellitePulse 3.2s 0.45s ease-in-out infinite;
-}
-
-.satellite-c {
-  right: 12%;
-  bottom: 32%;
-  background: #c7b4ff;
-  animation: satellitePulse 2.6s 0.9s ease-in-out infinite;
-}
-
-.satellite-d {
-  left: 27%;
-  bottom: 17%;
-  width: 7px;
-  height: 7px;
-  animation: satellitePulse 3.6s 1.2s ease-in-out infinite;
-}
-
-.code-rain {
-  position: absolute;
-  left: 8%;
-  top: 18%;
-  width: 84%;
-  height: 64%;
-  border-radius: inherit;
-  opacity: 0.5;
-  filter: blur(0.5px);
-  background: repeating-linear-gradient(to bottom, rgba(0, 229, 255, 0) 0, rgba(0, 229, 255, 0) 20px, rgba(0, 229, 255, 0.18) 21px, rgba(0, 229, 255, 0) 22px);
-  transform: rotate(-12deg);
-}
-
-.hero-orb.is-active .code-rain {
-  animation: codeRainSpin 10s linear infinite;
-}
-
-.orbit-dot {
-  position: absolute;
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: #00e5ff;
-  box-shadow: 0 0 16px rgba(0, 229, 255, 0.9);
-  animation: dotPulse 3s ease-in-out infinite;
-}
-
-.beam {
-  position: absolute;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(0, 229, 255, 0.8), transparent);
-}
-
-.beam-a {
-  left: 12%;
-  top: 24%;
-  width: 76%;
-  transform: rotate(12deg);
-}
-
-.beam-b {
-  left: 17%;
-  top: 66%;
-  width: 66%;
-  background: linear-gradient(90deg, transparent, rgba(139, 92, 246, 0.8), transparent);
-  transform: rotate(-12deg);
+  opacity: 0.86;
+  filter: drop-shadow(0 0 30px rgba(119, 190, 255, 0.3));
 }
 
 @keyframes spin {
@@ -1251,11 +784,6 @@ onUnmounted(() => {
   }
 }
 
-@keyframes spinReverse {
-  to {
-    transform: rotate(-360deg);
-  }
-}
 
 @keyframes breathe {
   50% {
@@ -1284,133 +812,6 @@ onUnmounted(() => {
   }
 }
 
-@keyframes pulseOrb {
-  50% {
-    opacity: 0.86;
-    transform: scale(1.04);
-  }
-}
-
-@keyframes coreGlow {
-  50% {
-    filter: saturate(1.28) brightness(1.13);
-  }
-}
-
-@keyframes surfaceFlow {
-  to {
-    transform: translateX(-18%) rotate(360deg);
-  }
-}
-
-@keyframes latitudeRoll {
-  to {
-    transform: rotateY(360deg) rotateZ(16deg);
-  }
-}
-
-@keyframes orb3dTumble {
-  0% {
-    transform: rotateX(0deg) rotateY(0deg) rotateZ(0deg) scale(1);
-  }
-
-  24% {
-    transform: rotateX(18deg) rotateY(92deg) rotateZ(8deg) scale(1.02);
-  }
-
-  50% {
-    transform: rotateX(-12deg) rotateY(184deg) rotateZ(-7deg) scale(1.035);
-  }
-
-  76% {
-    transform: rotateX(16deg) rotateY(278deg) rotateZ(10deg) scale(1.02);
-  }
-
-  100% {
-    transform: rotateX(0deg) rotateY(360deg) rotateZ(0deg) scale(1);
-  }
-}
-
-@keyframes glassSpin {
-  to {
-    transform: rotate(-360deg);
-  }
-}
-
-@keyframes scanDiscSpin {
-  to {
-    transform: rotate(346deg);
-  }
-}
-
-@keyframes codeRainSpin {
-  to {
-    transform: rotate(348deg);
-  }
-}
-
-@keyframes haloSpinA {
-  to {
-    transform: rotateX(68deg) rotateZ(342deg);
-  }
-}
-
-@keyframes haloSpinB {
-  to {
-    transform: rotateY(64deg) rotateZ(388deg);
-  }
-}
-
-@keyframes haloSpinC {
-  to {
-    transform: rotateX(74deg) rotateZ(442deg);
-  }
-}
-
-@keyframes scanSweep {
-  0%,
-  14% {
-    transform: translateY(0);
-    opacity: 0;
-  }
-
-  38%,
-  72% {
-    opacity: 0.88;
-  }
-
-  100% {
-    transform: translateY(320%);
-    opacity: 0;
-  }
-}
-
-@keyframes hotspotPulse {
-  50% {
-    transform: scale(1.55);
-    opacity: 0.58;
-  }
-}
-
-@keyframes satellitePulse {
-  50% {
-    transform: scale(1.8);
-    opacity: 0.45;
-  }
-}
-
-@keyframes dotPulse {
-  50% {
-    opacity: 1;
-    transform: scale(1.2);
-  }
-
-  0%,
-  100% {
-    opacity: 0.25;
-    transform: scale(0.8);
-  }
-}
 
 @keyframes particleDrift {
   to {
@@ -1419,7 +820,27 @@ onUnmounted(() => {
   }
 }
 
+@media (max-height: 800px) and (min-width: 1181px) {
+  .headline-wrap {
+    transform: translateY(-72px);
+  }
+
+  .headline-wrap h2 {
+    margin-top: 30px;
+  }
+
+  .feature-grid {
+    margin-top: 34px;
+  }
+}
+
 @media (max-width: 1180px) {
+  .index-page {
+    height: 100dvh;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
   .hero {
     grid-template-columns: 1fr;
     align-content: center;
@@ -1431,7 +852,15 @@ onUnmounted(() => {
   }
 
   .orb-stage {
-    display: none;
+    min-height: 300px;
+    margin-top: -42px;
+    justify-content: flex-end;
+  }
+
+  .hero-orb {
+    width: min(70vw, 620px);
+    min-width: 490px;
+    margin-right: -96px;
   }
 }
 
@@ -1458,7 +887,12 @@ onUnmounted(() => {
     padding: 92px 18px 28px;
   }
 
+  .hero-copy {
+    display: contents;
+  }
+
   .headline-wrap {
+    order: 1;
     transform: none;
   }
 
@@ -1477,7 +911,21 @@ onUnmounted(() => {
   }
 
   .feature-grid {
+    order: 3;
+    margin-top: 0;
     grid-template-columns: 1fr;
+  }
+
+  .orb-stage {
+    order: 2;
+    min-height: 260px;
+    margin-top: -10px;
+  }
+
+  .hero-orb {
+    width: 390px;
+    min-width: 390px;
+    margin-right: -102px;
   }
 }
 </style>

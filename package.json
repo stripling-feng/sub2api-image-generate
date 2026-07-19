@@ -4,18 +4,20 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently \"npm run dev -w server\" \"npm run dev -w client\"",
-    "build": "npm run build -w server && npm run build -w client",
-    "typecheck": "npm run typecheck -w server && npm run typecheck -w client",
-    "prisma:generate": "npm run prisma:generate -w server",
-    "prisma:migrate": "npm run prisma:migrate -w server",
-    "prisma:deploy": "npm run prisma:deploy -w server"
+    "dev": "npm run db:migrate && concurrently \"mvn -f backend/pom.xml spring-boot:run\" \"npm run dev -w client\"",
+    "build": "mvn -f backend/pom.xml package && npm run build -w client",
+    "test": "mvn -f backend/pom.xml test",
+    "typecheck": "npm run typecheck -w client",
+    "db:migrate": "node scripts/migrate-db.mjs",
+    "db:migrate:admin": "node scripts/migrate-admin-data.mjs",
+    "db:menus": "node scripts/apply-model-menus.mjs"
   },
   "workspaces": [
-    "client",
-    "server"
+    "client"
   ],
   "devDependencies": {
-    "concurrently": "^8.2.2"
+    "concurrently": "^8.2.2",
+    "mysql2": "^3.14.4",
+    "pg": "^8.16.3"
   }
 }

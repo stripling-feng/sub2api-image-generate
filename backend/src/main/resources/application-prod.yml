@@ -1,0 +1,33 @@
+spring:
+  datasource:
+    url: ${MEDIA_DB_URL}
+    username: ${MEDIA_DB_USERNAME}
+    password: ${MEDIA_DB_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 50
+      minimum-idle: 20
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+      database: ${SPRING_DATA_REDIS_DATABASE:0}
+      lettuce:
+        pool:
+          max-active: 50
+          max-idle: 20
+          min-idle: 5
+          max-wait: 3000ms
+
+cors:
+  allowed-origins: ${CORS_ALLOWED_ORIGINS:}
+
+sub2api:
+  datasource:
+    url: ${SUB2API_DB_URL}
+    username: ${SUB2API_DB_USERNAME}
+    password: ${SUB2API_DB_PASSWORD}
+    maximum-pool-size: ${SUB2API_DB_POOL_SIZE:10}

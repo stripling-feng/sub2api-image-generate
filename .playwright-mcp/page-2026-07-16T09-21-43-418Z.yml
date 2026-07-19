@@ -1,0 +1,104 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e41]:
+    - complementary [ref=e42]:
+      - generic [ref=e43]:
+        - generic [ref=e44]: FE
+        - generic [ref=e45]: Feng AI Admin
+      - menubar [ref=e50]:
+        - menuitem "工作台" [ref=e51] [cursor=pointer]
+        - menuitem "系统管理" [ref=e59]
+        - menuitem "工具管理" [ref=e72]
+        - menuitem "模型管理" [ref=e84]
+    - main [ref=e95]:
+      - generic [ref=e96]:
+        - generic [ref=e98]:
+          - navigation "面包屑" [ref=e100]:
+            - generic [ref=e101]:
+              - link "首页" [ref=e102]
+              - text: /
+            - link "控制台" [ref=e104]
+          - generic [ref=e105]:
+            - button [ref=e106] [cursor=pointer]
+            - button [ref=e110] [cursor=pointer]
+            - button "系 系统管理员 系统用户" [ref=e115] [cursor=pointer]:
+              - generic [ref=e116]:
+                - generic [ref=e117]: 系
+                - generic [ref=e118]:
+                  - generic [ref=e119]: 系统管理员
+                  - generic [ref=e120]: 系统用户
+        - generic [ref=e122]:
+          - button "控制台" [ref=e124] [cursor=pointer]
+          - button [ref=e128] [cursor=pointer]
+        - generic [ref=e133]:
+          - generic [ref=e134]:
+            - generic [ref=e135]:
+              - generic [ref=e136]: System Overview
+              - heading "统一的后台工作台" [level=2] [ref=e137]
+              - paragraph [ref=e138]: 这里保留了当前系统的核心状态、待处理事项和基础能力入口，方便管理员快速判断运行情况并继续操作。
+              - generic [ref=e139]:
+                - button "查看用户" [ref=e140] [cursor=pointer]
+                - button "打开系统配置" [ref=e142] [cursor=pointer]
+            - generic [ref=e144]:
+              - generic [ref=e145]:
+                - generic [ref=e146]: 在线模块
+                - strong [ref=e147]: "5"
+                - paragraph [ref=e148]: 用户、角色、菜单、配置、日志
+              - generic [ref=e149]:
+                - generic [ref=e150]: 当前主题
+                - strong [ref=e151]: 2563EB
+                - paragraph [ref=e152]: 科技蓝主色调，自动同步全局组件
+          - generic [ref=e153]:
+            - generic [ref=e154]:
+              - generic [ref=e155]: 技术栈
+              - generic [ref=e158]: Vue 3 + Element Plus
+              - generic [ref=e159]: 当前界面基于 Vite 构建，适合继续做模块化扩展。
+            - generic [ref=e160]:
+              - generic [ref=e161]: 权限粒度
+              - generic [ref=e164]: 按钮级
+              - generic [ref=e165]: 菜单、页面与操作权限都可通过统一体系控制。
+            - generic [ref=e166]:
+              - generic [ref=e167]: 运行环境
+              - generic [ref=e170]: Java 17
+              - generic [ref=e171]: 后端约束清晰，适配 MySQL 和标准管理场景。
+          - generic [ref=e172]:
+            - generic [ref=e173]:
+              - generic [ref=e174]:
+                - generic [ref=e175]:
+                  - generic [ref=e176]: Workspace
+                  - heading "最近状态" [level=3] [ref=e177]
+                  - paragraph [ref=e178]: 关注当前系统的基础运行信息和最近的管理动作，方便快速定位入口。
+                - generic [ref=e179]: 稳定
+              - generic [ref=e181]:
+                - generic [ref=e182]:
+                  - generic [ref=e183]: 系统主页
+                  - generic [ref=e184]: 可用
+                - generic [ref=e187]:
+                  - generic [ref=e188]: 权限模型
+                  - generic [ref=e189]: 已启用
+                - generic [ref=e192]:
+                  - generic [ref=e193]: 布局体验
+                  - generic [ref=e194]: 已优化
+            - generic [ref=e197]:
+              - generic [ref=e199]:
+                - generic [ref=e200]: Actions
+                - heading "快捷入口" [level=3] [ref=e201]
+                - paragraph [ref=e202]: 按工作台常用路径组织，尽量减少层级跳转。
+              - generic [ref=e203]:
+                - button "用户管理 维护账号、角色和岗位关系 →" [ref=e204] [cursor=pointer]:
+                  - generic [ref=e205]:
+                    - generic [ref=e206]: 用户管理
+                    - generic [ref=e207]: 维护账号、角色和岗位关系
+                  - generic [ref=e208]: →
+                - button "系统配置 调整站点基础信息和默认参数 →" [ref=e209] [cursor=pointer]:
+                  - generic [ref=e210]:
+                    - generic [ref=e211]: 系统配置
+                    - generic [ref=e212]: 调整站点基础信息和默认参数
+                  - generic [ref=e213]: →
+                - button "操作日志 查看最近的系统操作记录 →" [ref=e214] [cursor=pointer]:
+                  - generic [ref=e215]:
+                    - generic [ref=e216]: 操作日志
+                    - generic [ref=e217]: 查看最近的系统操作记录
+                  - generic [ref=e218]: →
+        - generic [ref=e219]: "&amp;copy; 2026 Feng AI Admin. All rights reserved."
+  - alert [ref=e221]:
+    - paragraph [ref=e225]: 登录成功

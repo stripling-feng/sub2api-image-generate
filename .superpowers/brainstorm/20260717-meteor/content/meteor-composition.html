@@ -1,0 +1,46 @@
+<style>
+  .meteor-options { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; margin-top:24px; }
+  .meteor-card { cursor:pointer; overflow:hidden; border:1px solid #2d3445; border-radius:12px; background:#070a12; transition:160ms ease; }
+  .meteor-card:hover,.meteor-card.selected { border-color:#ff7848; transform:translateY(-3px); box-shadow:0 14px 36px rgba(0,0,0,.28); }
+  .scene { position:relative; height:260px; overflow:hidden; background:radial-gradient(circle at 70% 40%,#172039 0,#090d18 38%,#03050a 100%); }
+  .copy { position:absolute; left:18px; top:74px; width:46%; }
+  .copy b,.copy i { display:block; height:11px; border-radius:2px; background:#dfe8ff; }
+  .copy b { width:90%; margin-bottom:12px; }
+  .copy i { width:64%; opacity:.45; }
+  .rock { position:absolute; width:138px; height:116px; clip-path:polygon(14% 28%,30% 7%,60% 0,88% 15%,100% 45%,87% 76%,61% 100%,28% 91%,3% 66%); background:radial-gradient(circle at 32% 30%,#59534d 0 7%,#201d1c 18%,#090908 72%); filter:drop-shadow(0 0 20px rgba(255,91,40,.35)); z-index:3; }
+  .rock:before { content:""; position:absolute; inset:15% 18%; border:3px solid rgba(255,91,40,.55); border-left-color:transparent; border-bottom-color:transparent; transform:rotate(28deg); }
+  .tail { position:absolute; height:34px; width:190px; background:linear-gradient(90deg,rgba(255,74,24,0),rgba(255,109,44,.14),rgba(255,166,79,.56)); filter:blur(8px); transform-origin:right center; z-index:2; }
+  .dust { position:absolute; width:220px; height:70px; opacity:.6; background:radial-gradient(circle,rgba(180,169,156,.45) 0 2px,transparent 3px) 0 0/19px 17px; filter:blur(1px); }
+  .a .rock { right:-28px; top:42px; transform:rotate(-17deg); }
+  .a .tail { right:58px; top:24px; transform:rotate(-20deg); }
+  .a .dust { right:56px; top:4px; transform:rotate(-20deg); }
+  .b .rock { right:-54px; top:74px; transform:rotate(8deg); }
+  .b .tail { right:42px; top:91px; }
+  .b .dust { right:38px; top:68px; }
+  .c .rock { right:-38px; bottom:20px; transform:rotate(22deg); }
+  .c .tail { right:48px; bottom:3px; transform:rotate(18deg); }
+  .c .dust { right:44px; bottom:-17px; transform:rotate(18deg); }
+  .meta { padding:16px; }
+  .meta h3 { margin:0 0 6px; color:#f4f6fb; font-size:16px; }
+  .meta p { margin:0; color:#969db0; font-size:13px; line-height:1.5; }
+  .recommended { color:#ff8c5a; font-size:11px; text-transform:uppercase; letter-spacing:.08em; }
+  @media (max-width:900px) { .meteor-options { grid-template-columns:1fr; } }
+</style>
+
+<h2>陨石从哪个方向飞入页面？</h2>
+<p class="subtitle">只比较飞行方向和右侧越界比例。点击一个方案。</p>
+
+<div class="meteor-options cards">
+  <div class="meteor-card card a" data-choice="a" onclick="toggleSelect(this)">
+    <div class="scene"><div class="copy"><b></b><i></i></div><div class="tail"></div><div class="dust"></div><div class="rock"></div></div>
+    <div class="meta"><span class="recommended">推荐</span><h3>A. 右上向左下切入</h3><p>主体越界约 25%，拖尾向右上延伸。动势最强，也不会压住左侧标题。</p></div>
+  </div>
+  <div class="meteor-card card b" data-choice="b" onclick="toggleSelect(this)">
+    <div class="scene"><div class="copy"><b></b><i></i></div><div class="tail"></div><div class="dust"></div><div class="rock"></div></div>
+    <div class="meta"><h3>B. 水平高速掠入</h3><p>主体越界约 40%，拖尾横向铺开。更克制，但画面会更像静态展示。</p></div>
+  </div>
+  <div class="meteor-card card c" data-choice="c" onclick="toggleSelect(this)">
+    <div class="scene"><div class="copy"><b></b><i></i></div><div class="tail"></div><div class="dust"></div><div class="rock"></div></div>
+    <div class="meta"><h3>C. 右下向左上冲入</h3><p>主体越界约 30%，拖尾压低。冲击感强，但更容易与下方功能卡争夺视觉。</p></div>
+  </div>
+</div>

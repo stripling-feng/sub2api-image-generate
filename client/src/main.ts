@@ -4,13 +4,15 @@ import { createRouter, createWebHistory } from "vue-router";
 import Root from "./Root.vue";
 import App from "./App.vue";
 import IndexPage from "./IndexPage.vue";
+import VideoWorkbench from "./VideoWorkbench.vue";
 import "./styles.css";
 
 const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: "/", component: App },
-    { path: "/index", component: IndexPage }
+    { path: "/index", component: IndexPage },
+    { path: "/video", component: VideoWorkbench }
   ]
 });
 

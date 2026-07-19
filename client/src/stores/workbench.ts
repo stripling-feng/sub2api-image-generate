@@ -14,6 +14,7 @@ type GeneratePayload = {
   count: number;
   responseFormat: "b64_json" | "url";
   extraParams: Record<string, unknown>;
+  parameters?: Record<string, unknown>;
   referenceImages?: Array<{
     name: string;
     mimeType: string;
