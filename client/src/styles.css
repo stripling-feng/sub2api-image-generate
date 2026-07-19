@@ -639,9 +639,9 @@ select:disabled {
 }
 
 .prompt {
-  min-height: 190px;
-  height: clamp(190px, 28vh, 280px);
-  max-height: 32vh;
+  min-height: 120px;
+  height: clamp(120px, 18vh, 180px);
+  max-height: 24vh;
   font-size: 16px;
   line-height: 1.65;
 }
