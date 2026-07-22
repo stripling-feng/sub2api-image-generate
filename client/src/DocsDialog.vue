@@ -61,6 +61,30 @@ const activeDocTab = ref<"gpt-image-2" | "gpt-image-2-4k">("gpt-image-2");
           </div>
 
           <div class="doc-body">
+            <section class="doc-section">
+              <div class="doc-callout">
+                <strong>快速接入</strong>
+                <ul>
+                  <li><strong>Base URL：</strong><code>https://api.tcboys.de/v1</code></li>
+                  <li><strong>鉴权：</strong>使用中转站控制台创建的 API Key，所有请求携带 <code>Authorization: Bearer &lt;API_KEY&gt;</code>。</li>
+                  <li><strong>异步流程：</strong>POST 创建任务，读取返回的 <code>id</code>，再用对应 GET 接口轮询。</li>
+                  <li><strong>状态：</strong><code>queued</code> / <code>processing</code> 表示继续轮询，<code>completed</code> 表示成功，<code>failed</code> 表示失败。</li>
+                </ul>
+              </div>
+
+              <h3>查询任务</h3>
+              <pre><code>curl "https://api.tcboys.de/v1/images/tasks/{task_id}" \
+  -H "Authorization: Bearer &lt;API_KEY&gt;"</code></pre>
+              <p>文生图和图片编辑任务统一使用该接口轮询。任务完成后读取 <code>data[].url</code>。</p>
+
+              <h3>错误返回</h3>
+              <pre><code>{
+  "error": {
+    "message": "Invalid API key"
+  }
+}</code></pre>
+            </section>
+
             <section v-if="activeDocTab === 'gpt-image-2'" class="doc-section">
               <div class="doc-callout">
                 <strong>GPT-Image-2</strong>
@@ -86,7 +110,7 @@ const activeDocTab = ref<"gpt-image-2" | "gpt-image-2-4k">("gpt-image-2");
                     <tr>
                       <td>model</td>
                       <td>是</td>
-                      <td>固定传模型广场展示名 cy-img1-gpt-image-2。</td>
+                      <td>固定传中转站模型名 gpt-image-2。</td>
                     </tr>
                     <tr>
                       <td>prompt</td>
@@ -122,21 +146,38 @@ const activeDocTab = ref<"gpt-image-2" | "gpt-image-2-4k">("gpt-image-2");
                 </table>
               </div>
 
-              <h3>请求 JSON</h3>
-              <pre><code>{
-  "async": true,
-  "model": "cy-img1-gpt-image-2",
-  "n": 1,
-  "prompt": "一只橘猫坐在窗台上，午后阳光",
-  "size": "1:1",
-  "stream": false
-}</code></pre>
+              <h3>文生图 curl</h3>
+              <pre><code>curl -X POST "https://api.tcboys.de/v1/images/generations" \
+  -H "Authorization: Bearer &lt;API_KEY&gt;" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "async": true,
+    "model": "gpt-image-2",
+    "n": 1,
+    "prompt": "一只橘猫坐在窗台上，午后阳光",
+    "size": "1:1",
+    "stream": false
+  }'</code></pre>
+
+              <h3>图片编辑 curl</h3>
+              <pre><code>curl -X POST "https://api.tcboys.de/v1/images/edits" \
+  -H "Authorization: Bearer &lt;API_KEY&gt;" \
+  -F "model=gpt-image-2" \
+  -F "prompt=把背景改成雪山" \
+  -F "size=1:1" \
+  -F "n=1" \
+  -F "async=true" \
+  -F "stream=false" \
+  -F "image[]=@./reference-1.png" \
+  -F "image[]=@./reference-2.png"
+
+# 可选蒙版：-F "mask=@./mask.png"</code></pre>
 
               <h3>返回示例</h3>
               <pre><code>{
   "created_at": 1715923200,
   "id": "task_img_01HZX8A2...",
-  "model": "cy-img1-gpt-image-2",
+  "model": "gpt-image-2",
   "object": "image.generation",
   "progress": "10%",
   "status": "queued"
@@ -234,14 +275,21 @@ const activeDocTab = ref<"gpt-image-2" | "gpt-image-2-4k">("gpt-image-2");
                 </table>
               </div>
 
-              <h3>请求 JSON</h3>
-              <pre><code>{
-  "model": "gpt-image-2-4k",
-  "prompt": "图片描述",
-  "n": 1,
-  "size": "3840x2160",
-  "response_format": "url"
-}</code></pre>
+              <h3>文生图 curl</h3>
+              <pre><code>curl -X POST "https://api.tcboys.de/v1/images/generations" \
+  -H "Authorization: Bearer &lt;API_KEY&gt;" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "async": true,
+    "model": "gpt-image-2-4k",
+    "prompt": "电影感城市夜景",
+    "n": 1,
+    "size": "3840x2160",
+    "response_format": "url",
+    "stream": false
+  }'</code></pre>
+
+              <p>带参考图时改用 <code>POST /v1/images/edits</code>，multipart 字段与 GPT-Image-2 示例一致。</p>
             </section>
           </div>
         </div>
