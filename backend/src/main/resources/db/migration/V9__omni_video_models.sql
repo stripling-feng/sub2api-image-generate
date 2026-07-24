@@ -1,14 +1,20 @@
 WITH existing_provider AS (
     SELECT id FROM model_providers
-    WHERE base_url = 'https://ai.cangyuansuanli.cn' AND deleted = 0
-    ORDER BY id LIMIT 1
+    WHERE name = '沧元算力' OR RTRIM(base_url, '/') = 'https://ai.cangyuansuanli.cn'
+    ORDER BY CASE WHEN name = '沧元算力' THEN 0 ELSE 1 END, id
+    LIMIT 1
+), restored_provider AS (
+    UPDATE model_providers
+    SET deleted = 0, update_time = CURRENT_TIMESTAMP
+    WHERE id = (SELECT id FROM existing_provider)
+    RETURNING id
 ), inserted_provider AS (
     INSERT INTO model_providers(name, base_url, image_api_key, video_api_key, enabled, provider_sort)
     SELECT '沧元算力', 'https://ai.cangyuansuanli.cn', '', '', 1, 1
-    WHERE NOT EXISTS (SELECT 1 FROM existing_provider)
+    WHERE NOT EXISTS (SELECT 1 FROM restored_provider)
     RETURNING id
 ), provider AS (
-    SELECT id FROM existing_provider UNION ALL SELECT id FROM inserted_provider
+    SELECT id FROM restored_provider UNION ALL SELECT id FROM inserted_provider
 )
 INSERT INTO ai_models(provider_id, model_type, model_key, display_name, upstream_model, generation_path,
                       async_mode, max_count, max_reference_images, supports_mask, parameter_schema,

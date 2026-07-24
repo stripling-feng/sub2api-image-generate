@@ -5,6 +5,7 @@ import org.springframework.core.io.ClassPathResource;
 
 import java.nio.charset.StandardCharsets;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PostgresSchemaTest {
@@ -57,7 +58,7 @@ class PostgresSchemaTest {
         String omni = read("db/migration/V9__omni_video_models.sql");
 
         assertTrue(omni.contains("https://ai.cangyuansuanli.cn"));
-        assertTrue(omni.contains("where not exists (select 1 from existing_provider)"));
+        assertTrue(omni.contains("where not exists (select 1 from restored_provider)"));
         for (String model : new String[]{"omni-fast", "omni-fast-no-water", "omni-v2v", "omni-v2v-no-water"}) {
             assertTrue(omni.contains("('" + model + "'"), model);
         }
@@ -72,6 +73,25 @@ class PostgresSchemaTest {
         assertTrue(omni.contains("8388608}', 8)"));
         assertTrue(omni.contains("8388608}', 9)"));
         assertTrue(omni.contains("on conflict(model_key) do nothing"));
+    }
+
+    @Test
+    void omniMigrationReusesAndRestoresCangyuanProvider() throws Exception {
+        String omni = read("db/migration/V9__omni_video_models.sql");
+
+        assertTrue(omni.contains("name = '沧元算力'"));
+        assertTrue(omni.contains("rtrim(base_url, '/') = 'https://ai.cangyuansuanli.cn'"));
+        assertFalse(omni.contains("and deleted = 0"));
+        assertTrue(omni.contains("order by case when name = '沧元算力' then 0 else 1 end"));
+        assertTrue(omni.contains("update model_providers"));
+        assertTrue(omni.contains("set deleted = 0"));
+        assertTrue(omni.contains("where id = (select id from existing_provider)"));
+        assertTrue(omni.contains("select id from restored_provider union all select id from inserted_provider"));
+
+        String restore = omni.substring(omni.indexOf("update model_providers"), omni.indexOf("returning id", omni.indexOf("update model_providers")));
+        assertFalse(restore.contains("api_key"));
+        assertFalse(restore.contains("base_url"));
+        assertFalse(restore.contains("enabled"));
     }
 
     private String read(String path) throws Exception {
