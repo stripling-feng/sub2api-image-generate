@@ -173,7 +173,7 @@ class VideoGenerationServiceTest {
 
         AiModel model = new AiModel();
         model.setId(9L); model.setModelKey("grok-video-1.5"); model.setUpstreamModel("grok-video-1.5");
-        model.setGenerationPath("/v1/video"); model.setBillingMode("PER_REQUEST");
+        model.setGenerationPath("/v1/videos"); model.setBillingMode("PER_REQUEST");
         model.setUnitPriceUsd(BigDecimal.ONE);
         ModelProvider provider = new ModelProvider();
         provider.setBaseUrl("https://api.example.com"); provider.setVideoApiKey("secret-key");
@@ -192,7 +192,7 @@ class VideoGenerationServiceTest {
                 "aspectRatio", "16:9", "resolution", "720p"), List.of(new ImageGateway.Upload("a.png", "image/png", png)), null, null);
 
         ArgumentCaptor<Map<String, Object>> body = ArgumentCaptor.forClass(Map.class);
-        verify(gateway).create(eq("https://api.example.com"), eq("secret-key"), eq("/v1/video"), body.capture());
+        verify(gateway).create(eq("https://api.example.com"), eq("secret-key"), eq("/v1/videos"), body.capture());
         assertEquals(true, body.getValue().containsKey("image"));
         assertEquals(Map.of("url", "https://media.example.com/uploads/video-materials/a.png"), body.getValue().get("image"));
         assertEquals(10, body.getValue().get("duration"));
