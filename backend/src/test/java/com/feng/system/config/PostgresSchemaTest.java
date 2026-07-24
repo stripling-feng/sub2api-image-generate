@@ -52,6 +52,28 @@ class PostgresSchemaTest {
         assertTrue(videoPath.contains("model_key in ('grok-video', 'grok-video-1.5')"));
     }
 
+    @Test
+    void omniMigrationSeedsDisabledVideoModelsIdempotently() throws Exception {
+        String omni = read("db/migration/V9__omni_video_models.sql");
+
+        assertTrue(omni.contains("https://ai.cangyuansuanli.cn"));
+        assertTrue(omni.contains("where not exists (select 1 from existing_provider)"));
+        for (String model : new String[]{"omni-fast", "omni-fast-no-water", "omni-v2v", "omni-v2v-no-water"}) {
+            assertTrue(omni.contains("('" + model + "'"), model);
+        }
+        assertTrue(omni.contains("seed.model_key, '/v1/videos'"));
+        assertTrue(omni.contains("1, 4, seed.max_images, 0"));
+        assertTrue(omni.contains("0, 'per_request', 0, seed.model_sort"));
+        assertTrue(omni.contains("\"maximagebytes\":5242880"));
+        assertTrue(omni.contains("\"maximagebytes\":8388608"));
+        assertTrue(omni.contains("\"maxvideobytes\":8388608"));
+        assertTrue(omni.contains("5242880}', 6)"));
+        assertTrue(omni.contains("5242880}', 7)"));
+        assertTrue(omni.contains("8388608}', 8)"));
+        assertTrue(omni.contains("8388608}', 9)"));
+        assertTrue(omni.contains("on conflict(model_key) do nothing"));
+    }
+
     private String read(String path) throws Exception {
         ClassPathResource resource = new ClassPathResource(path);
         assertTrue(resource.exists(), path + " must exist");

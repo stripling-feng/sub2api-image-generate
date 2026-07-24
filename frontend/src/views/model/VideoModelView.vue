@@ -70,8 +70,12 @@ const templates = [
   { key: 'seedance-2.0', name: 'Seedance 2.0', upstream: 'seedance-2.0', path: '/v1/videos' },
   { key: 'seedance-2.0-fast', name: 'Seedance 2.0 Fast', upstream: 'seedance-2.0-fast', path: '/v1/videos' },
   { key: 'seedance-2.0-mini', name: 'Seedance 2.0 Mini', upstream: 'seedance-2.0-mini', path: '/v1/videos' },
-  { key: 'grok-video', name: 'Grok Video', upstream: 'cy-gv1-grok-video', path: '/v1/video' },
-  { key: 'grok-video-1.5', name: 'Grok Video 1.5', upstream: 'grok-video-1.5', path: '/v1/video' },
+  { key: 'grok-video', name: 'Grok Video', upstream: 'cy-gv1-grok-video', path: '/v1/videos' },
+  { key: 'grok-video-1.5', name: 'Grok Video 1.5', upstream: 'grok-video-1.5', path: '/v1/videos' },
+  { key: 'omni-fast', name: 'Omni Fast', upstream: 'omni-fast', path: '/v1/videos' },
+  { key: 'omni-fast-no-water', name: 'Omni Fast (No Watermark)', upstream: 'omni-fast-no-water', path: '/v1/videos' },
+  { key: 'omni-v2v', name: 'Omni V2V', upstream: 'omni-v2v', path: '/v1/videos' },
+  { key: 'omni-v2v-no-water', name: 'Omni V2V (No Watermark)', upstream: 'omni-v2v-no-water', path: '/v1/videos' },
 ]
 const list = ref([]), providers = ref([]), visible = ref(false), formRef = ref(null)
 const filters = reactive({ name: '' }), page = reactive({ pageNum: 1, pageSize: 10, total: 0 })
@@ -80,6 +84,8 @@ const form = reactive(empty())
 const rules = { providerId: [{ required: true, message: '请选择服务商' }], modelKey: [{ required: true, message: '请选择模型模板' }], displayName: [{ required: true, message: '请输入显示名称' }], upstreamModel: [{ required: true, message: '请输入上游模型标识' }], generationPath: [{ required: true, message: '请输入生成路径' }], unitPriceUsd: [{ required: true, message: '请输入价格' }] }
 
 function capabilities(key) {
+  if (key.startsWith('omni-fast')) return ['文生 / 图生', '首尾帧', '最多 5 图', '10 秒 / 720p', '16:9 / 9:16']
+  if (key.startsWith('omni-v2v')) return ['视频必填', '1–2 视频', '可选 2 图', '10 秒 / 720p', '16:9 / 9:16']
   if (key === 'grok-video-1.5') return ['单图必填', '4–15 秒', '480p / 720p', '横屏 / 竖屏']
   if (key === 'grok-video') return ['文生 / 图生', '最多 7 图', '视频编辑', '480p / 720p']
   return ['文生 / 图生', '首尾帧', '4 图 / 3 视频 / 1 音频', '原生音频']
