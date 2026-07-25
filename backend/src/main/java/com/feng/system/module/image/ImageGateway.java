@@ -76,9 +76,14 @@ public class ImageGateway {
     public Download content(String baseUrl, String apiKey, String generationPath, String taskId) {
         String endpoint = configuredEndpoint(baseUrl, generationPath).replaceFirst("/generations$", "/"
                 + UriUtils.encodePathSegment(taskId, StandardCharsets.UTF_8) + "/content");
-        ResponseEntity<byte[]> response = http.exchange(endpoint, HttpMethod.GET, new HttpEntity<>(auth(apiKey)), byte[].class);
-        MediaType type = response.getHeaders().getContentType();
-        return new Download(response.getBody() == null ? new byte[0] : response.getBody(), type == null ? "image/png" : type.toString());
+        try {
+            ResponseEntity<byte[]> response = http.exchange(endpoint, HttpMethod.GET, new HttpEntity<>(auth(apiKey)), byte[].class);
+            MediaType type = response.getHeaders().getContentType();
+            return new Download(response.getBody() == null ? new byte[0] : response.getBody(), type == null ? "image/png" : type.toString());
+        } catch (HttpStatusCodeException e) {
+            Object payload = parse(e.getResponseBodyAsString());
+            throw new ImageApiException(e.getStatusCode().value(), error(payload, "Image content download failed"), null, payload);
+        }
     }
 
     public Download download(String url) {

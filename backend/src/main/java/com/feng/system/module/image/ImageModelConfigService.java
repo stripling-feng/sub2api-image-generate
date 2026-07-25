@@ -262,9 +262,9 @@ public class ImageModelConfigService {
                  {"key":"resolution","label":"清晰度","type":"select","default":"720p","options":["480p","720p"]}]
                 """;
         String omniParams = """
-                [{"key":"duration","label":"视频时长","type":"select","default":10,"options":[10]},
-                 {"key":"aspectRatio","label":"画面比例","type":"select","default":"16:9","options":["16:9","9:16"]},
-                 {"key":"resolution","label":"清晰度","type":"select","default":"720p","options":["720p"]}]
+                [{"key":"duration","label":"Duration","type":"select","default":10,"options":[10]},
+                 {"key":"aspectRatio","label":"Aspect ratio","type":"select","default":"16:9","options":["16:9","9:16"]},
+                 {"key":"resolution","label":"Resolution","type":"select","default":"720p","options":["720p"]}]
                 """;
         switch (model.getModelKey() == null ? "" : model.getModelKey()) {
             case "seedance-2.0", "seedance-2.0-fast", "seedance-2.0-mini" -> {
@@ -286,12 +286,12 @@ public class ImageModelConfigService {
             case "omni-fast", "omni-fast-no-water" -> {
                 model.setGenerationPath("/v1/videos"); model.setMaxReferenceImages(5);
                 model.setParameterSchema(omniParams);
-                model.setDefaultParams("{\"protocol\":\"omni\",\"images\":5,\"videos\":0,\"audios\":0,\"frameInputs\":true,\"requiresVideo\":false,\"maxImageBytes\":5242880}");
+                model.setDefaultParams("{\"protocol\":\"omni-fast\",\"images\":5,\"videos\":0,\"audios\":0,\"frameInputs\":true,\"maxImageBytes\":5242880}");
             }
             case "omni-v2v", "omni-v2v-no-water" -> {
                 model.setGenerationPath("/v1/videos"); model.setMaxReferenceImages(2);
                 model.setParameterSchema(omniParams);
-                model.setDefaultParams("{\"protocol\":\"omni\",\"images\":2,\"videos\":2,\"audios\":0,\"frameInputs\":false,\"requiresVideo\":true,\"maxImageBytes\":8388608,\"maxVideoBytes\":8388608}");
+                model.setDefaultParams("{\"protocol\":\"omni-v2v\",\"images\":2,\"videos\":2,\"audios\":0,\"frameInputs\":false,\"maxImageBytes\":8388608,\"maxVideoBytes\":8388608}");
             }
             default -> throw new BusinessException("请选择支持的视频模型模板");
         }

@@ -18,6 +18,16 @@ public final class VideoTaskRules {
     public static void validate(String model, int duration, String ratio, String resolution, int images,
                                 int videos, int audios, boolean firstFrame, boolean lastFrame) {
         if (duration < 4 || duration > 15 || !List.of("480p", "720p").contains(resolution)) invalid();
+        if (model.startsWith("omni-fast")) {
+            if (duration != 10 || !"720p".equals(resolution) || !List.of("16:9", "9:16").contains(ratio)
+                    || images > 5 || videos != 0 || audios != 0 || images > 0 && (firstFrame || lastFrame)) invalid();
+            return;
+        }
+        if (model.startsWith("omni-v2v")) {
+            if (duration != 10 || !"720p".equals(resolution) || !List.of("16:9", "9:16").contains(ratio)
+                    || images > 2 || videos > 2 || audios != 0 || firstFrame || lastFrame) invalid();
+            return;
+        }
         if (model.startsWith("seedance-")) {
             if (!List.of("16:9", "9:16", "1:1", "21:9", "3:4", "4:3").contains(ratio)
                     || images > 4 || videos > 3 || audios > 1 || firstFrame != lastFrame

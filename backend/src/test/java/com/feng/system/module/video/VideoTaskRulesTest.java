@@ -32,4 +32,19 @@ class VideoTaskRulesTest {
         assertThrows(ImageApiException.class, () -> VideoTaskRules.validate(
                 "seedance-2.0", 8, "16:9", "720p", 1, 0, 0, true, true));
     }
+
+    @Test
+    void omniFastAndV2vEnforceTheirFixedContracts() {
+        VideoTaskRules.validate("omni-fast", 10, "16:9", "720p", 5, 0, 0, false, false);
+        VideoTaskRules.validate("omni-fast", 10, "9:16", "720p", 0, 0, 0, true, true);
+        assertThrows(ImageApiException.class, () -> VideoTaskRules.validate(
+                "omni-fast", 8, "16:9", "720p", 0, 0, 0, false, false));
+        assertThrows(ImageApiException.class, () -> VideoTaskRules.validate(
+                "omni-fast", 10, "16:9", "720p", 6, 0, 0, false, false));
+
+        VideoTaskRules.validate("omni-v2v", 10, "16:9", "720p", 2, 2, 0, false, false);
+        VideoTaskRules.validate("omni-v2v", 10, "16:9", "720p", 0, 0, 0, false, false);
+        assertThrows(ImageApiException.class, () -> VideoTaskRules.validate(
+                "omni-v2v", 10, "16:9", "720p", 0, 1, 1, false, false));
+    }
 }

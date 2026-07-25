@@ -12,12 +12,15 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.util.UriUtils;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.List;
 
 @Service
 public class VideoGateway {
@@ -32,18 +35,36 @@ public class VideoGateway {
     }
 
     public Task create(String baseUrl, String apiKey, String path, Map<String, Object> body) {
-        return exchange(endpoint(baseUrl, path), HttpMethod.POST, apiKey, body);
+        return exchange(endpoint(baseUrl, path), HttpMethod.POST, apiKey, body, MediaType.APPLICATION_JSON);
+    }
+
+    public Task create(String baseUrl, String apiKey, String path, Map<String, Object> body, List<String> inputReferences) {
+        MultiValueMap<String, Object> form = new LinkedMultiValueMap<>();
+        body.forEach(form::add);
+        inputReferences.forEach(value -> form.add("input_reference", value));
+        return exchange(endpoint(baseUrl, path), HttpMethod.POST, apiKey, form, MediaType.MULTIPART_FORM_DATA);
     }
 
     public Task query(String baseUrl, String apiKey, String path, String taskId) {
         String url = endpoint(baseUrl, path) + "/" + UriUtils.encodePathSegment(taskId, StandardCharsets.UTF_8);
-        return exchange(url, HttpMethod.GET, apiKey, null);
+        return exchange(url, HttpMethod.GET, apiKey, null, MediaType.APPLICATION_JSON);
     }
 
-    private Task exchange(String url, HttpMethod method, String apiKey, Object body) {
+    public ResponseEntity<byte[]> download(String baseUrl, String apiKey, String path, String taskId) {
+        String url = endpoint(baseUrl, path) + "/" + UriUtils.encodePathSegment(taskId, StandardCharsets.UTF_8) + "/content";
+        HttpHeaders headers = new HttpHeaders(); headers.setBearerAuth(apiKey);
+        try {
+            return http.exchange(url, HttpMethod.GET, new HttpEntity<>(headers), byte[].class);
+        } catch (HttpStatusCodeException e) {
+            Object payload = parse(e.getResponseBodyAsString());
+            throw new ImageApiException(e.getStatusCode().value(), error(payload, "Video content download failed."), null, payload);
+        }
+    }
+
+    private Task exchange(String url, HttpMethod method, String apiKey, Object body, MediaType contentType) {
         HttpHeaders headers = new HttpHeaders();
         headers.setBearerAuth(apiKey);
-        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.setContentType(contentType);
         try {
             if (body != null) log.info("Video upstream request {} {}", url, body);
             String text = http.exchange(url, method, new HttpEntity<>(body, headers), String.class).getBody();
@@ -64,6 +85,8 @@ public class VideoGateway {
         String url = string(data.get("result_url"));
         if (url == null) url = string(data.get("video_url"));
         if (url == null && data.get("metadata") instanceof Map<?, ?> metadata) url = string(map(metadata).get("url"));
+        if (url == null && root.get("data") instanceof List<?> list && !list.isEmpty()
+                && list.get(0) instanceof Map<?, ?> item) url = string(map(item).get("url"));
         String failure = string(data.get("fail_reason"));
         if (failure == null && data.get("error") instanceof Map<?, ?> error) failure = string(map(error).get("message"));
         if (failure == null) failure = string(data.get("error_code"));

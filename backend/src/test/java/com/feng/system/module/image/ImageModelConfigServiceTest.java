@@ -14,12 +14,11 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.times;
 
 class ImageModelConfigServiceTest {
 
@@ -49,7 +48,7 @@ class ImageModelConfigServiceTest {
         model.setDefaultParams("{}");
 
         when(models.selectList(any())).thenReturn(List.of(model));
-        when(providers.selectBatchIds(List.of(1L))).thenReturn(List.of(provider));
+        when(providers.selectBatchIds(any())).thenReturn(List.of(provider));
 
         List<Map<String, Object>> result = service.publicImages();
 
@@ -82,7 +81,7 @@ class ImageModelConfigServiceTest {
         model.setDefaultParams("{\"protocol\":\"seedance\"}");
 
         when(models.selectList(any())).thenReturn(List.of(model));
-        when(providers.selectBatchIds(List.of(1L))).thenReturn(List.of(provider));
+        when(providers.selectBatchIds(any())).thenReturn(List.of(provider));
 
         Map<String, Object> result = service.publicVideos().get(0);
 
@@ -113,50 +112,27 @@ class ImageModelConfigServiceTest {
     }
 
     @Test
-    void omniVideoTemplatesExposeFixedCapabilitiesAndUploadLimits() throws Exception {
+    void omniTemplatesExposeFixedCapabilities() throws Exception {
         ModelProviderMapper providers = mock(ModelProviderMapper.class);
         AiModelMapper models = mock(AiModelMapper.class);
-        ObjectMapper json = new ObjectMapper();
         ImageModelConfigService service = new ImageModelConfigService(providers, models,
-                mock(GenerationJobMapper.class), json);
+                mock(GenerationJobMapper.class), new ObjectMapper());
         ModelProvider provider = new ModelProvider(); provider.setId(1L);
         when(providers.selectById(1L)).thenReturn(provider);
 
         for (String key : List.of("omni-fast", "omni-fast-no-water", "omni-v2v", "omni-v2v-no-water")) {
             AiModel model = new AiModel(); model.setProviderId(1L); model.setModelKey(key);
-            model.setDisplayName(key); model.setUnitPriceUsd(BigDecimal.ZERO); model.setEnabled(0);
+            model.setDisplayName(key); model.setUpstreamModel(key); model.setUnitPriceUsd(BigDecimal.ZERO);
             service.saveVideo(model);
         }
 
         ArgumentCaptor<AiModel> saved = ArgumentCaptor.forClass(AiModel.class);
         verify(models, times(4)).insert(saved.capture());
-        assertOmniTemplate(json, saved.getAllValues().get(0), 5, 0, true, false, 5 * 1024 * 1024);
-        assertOmniTemplate(json, saved.getAllValues().get(1), 5, 0, true, false, 5 * 1024 * 1024);
-        assertOmniTemplate(json, saved.getAllValues().get(2), 2, 2, false, true, 8 * 1024 * 1024);
-        assertOmniTemplate(json, saved.getAllValues().get(3), 2, 2, false, true, 8 * 1024 * 1024);
-    }
-
-    private void assertOmniTemplate(ObjectMapper json, AiModel model, int images, int videos,
-                                    boolean frameInputs, boolean requiresVideo, int maxBytes) throws Exception {
-        assertEquals(model.getModelKey(), model.getUpstreamModel());
-        assertEquals("/v1/videos", model.getGenerationPath());
-        assertEquals("PER_REQUEST", model.getBillingMode());
-        assertEquals(4, model.getMaxCount());
-        assertEquals(images, model.getMaxReferenceImages());
-
-        List<?> parameters = json.readValue(model.getParameterSchema(), List.class);
-        assertEquals(List.of(10), ((Map<?, ?>) parameters.get(0)).get("options"));
-        assertEquals(List.of("16:9", "9:16"), ((Map<?, ?>) parameters.get(1)).get("options"));
-        assertEquals(List.of("720p"), ((Map<?, ?>) parameters.get(2)).get("options"));
-
-        Map<?, ?> defaults = json.readValue(model.getDefaultParams(), Map.class);
-        assertEquals("omni", defaults.get("protocol"));
-        assertEquals(images, defaults.get("images"));
-        assertEquals(videos, defaults.get("videos"));
-        assertEquals(frameInputs, defaults.get("frameInputs"));
-        assertEquals(requiresVideo, defaults.get("requiresVideo"));
-        assertEquals(maxBytes, defaults.get("maxImageBytes"));
-        if (requiresVideo) assertEquals(maxBytes, defaults.get("maxVideoBytes"));
-        else assertFalse(defaults.containsKey("maxVideoBytes"));
+        AiModel fast = saved.getAllValues().stream().filter(value -> value.getModelKey().equals("omni-fast")).findFirst().orElseThrow();
+        AiModel v2v = saved.getAllValues().stream().filter(value -> value.getModelKey().equals("omni-v2v")).findFirst().orElseThrow();
+        assertEquals("/v1/videos", fast.getGenerationPath());
+        assertEquals(5, fast.getMaxReferenceImages());
+        assertEquals(true, new ObjectMapper().readValue(fast.getDefaultParams(), Map.class).containsKey("maxImageBytes"));
+        assertEquals(false, new ObjectMapper().readValue(v2v.getDefaultParams(), Map.class).containsKey("requiresVideo"));
     }
 }

@@ -61,6 +61,42 @@ public class VideoMaterialUploadService {
                 + UUID.randomUUID().toString().replace("-", "") + "." + ext, image.mimeType());
     }
 
+    public Uploaded storeGenerated(String jobId, byte[] bytes, String contentType) {
+        String mime = contentType == null ? "" : contentType.split(";", 2)[0].trim().toLowerCase(Locale.ROOT);
+        String ext = switch (mime) { case "video/mp4" -> "mp4"; case "video/webm" -> "webm"; default -> null; };
+        boolean signature = "mp4".equals(ext) && bytes != null && bytes.length >= 8
+                && bytes[4] == 'f' && bytes[5] == 't' && bytes[6] == 'y' && bytes[7] == 'p'
+                || "webm".equals(ext) && bytes != null && bytes.length >= 4
+                && bytes[0] == 0x1a && bytes[1] == 0x45 && bytes[2] == (byte) 0xdf && bytes[3] == (byte) 0xa3;
+        if (!StringUtils.hasText(publicBaseUrl) || !StringUtils.hasText(jobId) || !jobId.matches("[A-Za-z0-9_-]+") || !signature)
+            throw new ImageApiException(502, "Invalid generated video content.");
+        String relative = "generated-videos/" + jobId + "." + ext;
+        Path target = root.resolve(relative).normalize();
+        if (!target.startsWith(root)) throw new ImageApiException(502, "Invalid generated video content.");
+        try {
+            Files.createDirectories(target.getParent());
+            if (!Files.exists(target)) Files.write(target, bytes, StandardOpenOption.CREATE_NEW);
+        } catch (Exception e) {
+            throw new ImageApiException(502, "Generated video storage failed.");
+        }
+        return new Uploaded(publicBaseUrl + "/uploads/" + relative, target.toString(), mime, Files.exists(target) ? size(target) : bytes.length);
+    }
+
+    public void deleteGenerated(String jobId) {
+        if (!StringUtils.hasText(jobId) || !jobId.matches("[A-Za-z0-9_-]+")) return;
+        try {
+            Files.deleteIfExists(root.resolve("generated-videos/" + jobId + ".mp4"));
+            Files.deleteIfExists(root.resolve("generated-videos/" + jobId + ".webm"));
+        } catch (Exception e) {
+            throw new ImageApiException(500, "Generated video deletion failed.");
+        }
+    }
+
+    private static long size(Path path) {
+        try { return Files.size(path); }
+        catch (Exception e) { throw new ImageApiException(502, "Generated video storage failed."); }
+    }
+
     private Uploaded store(byte[] bytes, String relative, String mime) {
         if (!StringUtils.hasText(publicBaseUrl)) throw new ImageApiException(500, "Video upload public base URL is not configured.");
         Path target = root.resolve(relative).normalize();

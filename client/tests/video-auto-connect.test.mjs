@@ -3,6 +3,9 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const source = await readFile(new URL("../src/VideoWorkbench.vue", import.meta.url), "utf8");
+const adminSource = await readFile(new URL("../../frontend/src/views/model/VideoModelView.vue", import.meta.url), "utf8");
+const migrationSource = await readFile(new URL("../../backend/src/main/resources/db/migration/V9__omni_video_models.sql", import.meta.url), "utf8");
+const v10MigrationSource = await readFile(new URL("../../backend/src/main/resources/db/migration/V10__omni_v2v_optional_references.sql", import.meta.url), "utf8").catch(() => "");
 
 test("video workbench automatically connects without a connect button", () => {
   assert.doesNotMatch(source, />\s*连接\s*<\/button>/);
@@ -79,10 +82,31 @@ test("video generation shows a fullscreen loading overlay", () => {
   assert.match(source, /\.fullscreen-loading/);
 });
 
-test("text-to-video hides models that require an image", () => {
-  assert.match(source, /const selectableModels = computed\(\(\) => models\.value\.filter\(item => creationMode\.value !== "text" \|\| !item\.defaults\?\.requiresImage\)\)/);
+test("text-to-video hides only models that require an image", () => {
+  assert.match(source, /type CreationMode = "text" \| "image" \| "frames"/);
+  assert.match(source, /case "text":[\s\S]*!item\.defaults\?\.requiresImage/);
   assert.match(source, /v-for="model in selectableModels"/);
   assert.match(source, /!selectableModels\.value\.some\(item => item\.model === form\.model\)/);
+});
+
+test("image mode includes video-reference models without a separate v2v mode", () => {
+  assert.match(source, /case "image": return Number\(item\.defaults\?\.images \?\? item\.maxReferenceImages\) > 0/);
+  assert.doesNotMatch(source, /creationMode === 'v2v'|case "v2v":/);
+  assert.match(source, /v-if="supportsVideos" class="video-material-field"/);
+});
+
+test("material file sizes use model capability metadata", () => {
+  assert.match(source, /const maxImageBytes = computed\(\(\) => Number\(capabilities\.value\.maxImageBytes \?\? 30 \* 1024 \* 1024\)\)/);
+  assert.match(source, /const maxVideoBytes = computed\(\(\) => Number\(capabilities\.value\.maxVideoBytes \?\? 30 \* 1024 \* 1024\)\)/);
+  assert.match(source, /file\.size <= maxImageBytes\.value/);
+  assert.match(source, /file\.size <= maxVideoBytes\.value/);
+});
+
+test("video parameter controls leave room for omni labels and values", () => {
+  assert.match(source, /\.creation-dock \{[^}]*width: min\(1240px, calc\(100% - 42px\)\)/s);
+  assert.match(source, /\.dock-field \{ width: 150px;/);
+  assert.match(source, /\.dock-field\.model-field \{ width: 220px;/);
+  assert.match(source, /\.duration-slider \{ width: 190px;/);
 });
 
 test("seedance prompt supports material placeholders", () => {
@@ -94,4 +118,17 @@ test("seedance prompt supports material placeholders", () => {
   assert.match(source, /token: `@audio\$\{index \+ 1\}`/);
   assert.match(source, /v-for="item in placeholderMaterials"/);
   assert.match(source, /@click="insertPlaceholder\(item\.token\)"/);
+});
+
+test("admin exposes four omni templates on the unified endpoint", () => {
+  for (const model of ["omni-fast", "omni-fast-no-water", "omni-v2v", "omni-v2v-no-water"]) {
+    assert.match(adminSource, new RegExp(`key: ['"]${model}['"][^\\n]+path: ['"]\\/v1\\/videos['"]`));
+  }
+  assert.doesNotMatch(adminSource, /key: ['"]grok-video(?:-1\.5)?['"][^\n]+path: ['"]\/v1\/video['"]/);
+  for (const model of ["omni-fast", "omni-fast-no-water", "omni-v2v", "omni-v2v-no-water"]) {
+    assert.match(migrationSource, new RegExp(`['"]${model}['"]`));
+  }
+  assert.match(migrationSource, /0, 'PER_REQUEST', 0, seed\.model_sort/);
+  assert.match(migrationSource, /ON CONFLICT\(model_key\) DO NOTHING/);
+  assert.match(v10MigrationSource, /default_params - 'requiresVideo'/);
 });

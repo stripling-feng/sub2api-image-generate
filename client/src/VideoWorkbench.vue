@@ -48,11 +48,21 @@ const form = reactive({
 });
 
 const activeModel = computed(() => models.value.find(item => item.model === form.model) ?? null);
-const selectableModels = computed(() => models.value.filter(item => creationMode.value !== "text" || !item.defaults?.requiresImage));
+const selectableModels = computed(() => models.value.filter(item => {
+  switch (creationMode.value) {
+    case "text": return !item.defaults?.requiresImage;
+    case "image": return Number(item.defaults?.images ?? item.maxReferenceImages) > 0;
+    case "frames": return Boolean(item.defaults?.frameInputs);
+  }
+}));
 const capabilities = computed(() => activeModel.value?.defaults ?? {});
 const maxImages = computed(() => Number(capabilities.value.images ?? activeModel.value?.maxReferenceImages ?? 0));
 const maxVideos = computed(() => Number(capabilities.value.videos ?? 0));
 const maxAudios = computed(() => Number(capabilities.value.audios ?? 0));
+const maxImageBytes = computed(() => Number(capabilities.value.maxImageBytes ?? 30 * 1024 * 1024));
+const maxVideoBytes = computed(() => Number(capabilities.value.maxVideoBytes ?? 30 * 1024 * 1024));
+const hasImageModels = computed(() => models.value.some(item => Number(item.defaults?.images ?? item.maxReferenceImages) > 0));
+const hasFrameModels = computed(() => models.value.some(item => Boolean(item.defaults?.frameInputs)));
 const supportsFrames = computed(() => Boolean(capabilities.value.frameInputs));
 const supportsVideos = computed(() => Number(capabilities.value.videos ?? 0) > 0);
 const supportsAudios = computed(() => Number(capabilities.value.audios ?? 0) > 0);
@@ -133,19 +143,20 @@ function setCreationMode(mode: CreationMode) {
     lastFrame.value = null;
     setReferenceVideos([]);
     setReferenceAudios([]);
-  } else if (mode === "image") {
-    firstFrame.value = null;
-    lastFrame.value = null;
-  } else {
+  } else if (mode === "frames") {
     setReferenceImages([]);
     setReferenceVideos([]);
     setReferenceAudios([]);
+  } else {
+    firstFrame.value = null;
+    lastFrame.value = null;
   }
 }
 
 function applyDefaults() {
   const model = activeModel.value;
   if (!model) return;
+  form.generateAudio = false;
   for (const field of model.parameters) {
     const value = field.default ?? (field.options?.length ? optionValue(field.options[0]) : undefined);
     if (field.key === "duration") form.duration = longestDurationOption();
@@ -253,7 +264,7 @@ async function deleteAll() {
 }
 function selectImages(event: Event) {
   const input = event.target as HTMLInputElement;
-  const files = Array.from(input.files ?? []).filter(file => file.type.startsWith("image/") && file.size <= 30 * 1024 * 1024);
+  const files = Array.from(input.files ?? []).filter(file => file.type.startsWith("image/") && file.size <= maxImageBytes.value);
   setReferenceImages([...referenceImages.value, ...files].slice(0, maxImages.value));
   clampDuration();
   if (files.length) { firstFrame.value = null; lastFrame.value = null; }
@@ -270,7 +281,7 @@ function setReferenceImages(files: File[]) {
 }
 function selectReferenceVideo(event: Event) {
   const input = event.target as HTMLInputElement;
-  const files = Array.from(input.files ?? []).filter(file => file.type.startsWith("video/") && file.size <= 30 * 1024 * 1024);
+  const files = Array.from(input.files ?? []).filter(file => file.type.startsWith("video/") && file.size <= maxVideoBytes.value);
   setReferenceVideos([...referenceVideos.value, ...files].slice(0, maxVideos.value));
   if (files.length) { firstFrame.value = null; lastFrame.value = null; }
   input.value = "";
@@ -318,7 +329,8 @@ async function uploadMaterialFile(file: File) {
   return data.url;
 }
 function selectFrame(event: Event, target: "first" | "last") {
-  const input = event.target as HTMLInputElement; const file = input.files?.[0] ?? null;
+  const input = event.target as HTMLInputElement; const selected = input.files?.[0] ?? null;
+  const file = selected?.type.startsWith("image/") && selected.size <= maxImageBytes.value ? selected : null;
   if (target === "first") firstFrame.value = file; else lastFrame.value = file;
   if (file) { setReferenceImages([]); setReferenceVideos([]); setReferenceAudios([]); }
   input.value = "";
@@ -375,8 +387,8 @@ onUnmounted(() => {
 
     <aside class="mode-rail" aria-label="创作模式">
       <button type="button" :class="{ active: creationMode === 'text' }" @click="setCreationMode('text')"><Type :size="19" /><span>文生视频</span></button>
-      <button type="button" :class="{ active: creationMode === 'image' }" :disabled="maxImages <= 0" @click="setCreationMode('image')"><ImagePlus :size="19" /><span>图生视频</span></button>
-      <button type="button" :class="{ active: creationMode === 'frames' }" :disabled="!supportsFrames" @click="setCreationMode('frames')"><Film :size="19" /><span>首尾帧</span></button>
+      <button type="button" :class="{ active: creationMode === 'image' }" :disabled="!hasImageModels" @click="setCreationMode('image')"><ImagePlus :size="19" /><span>图生视频</span></button>
+      <button type="button" :class="{ active: creationMode === 'frames' }" :disabled="!hasFrameModels" @click="setCreationMode('frames')"><Film :size="19" /><span>首尾帧</span></button>
     </aside>
 
     <section class="stage">
@@ -533,7 +545,7 @@ onUnmounted(() => {
 .video-empty strong { color: var(--text); font-size: 15px; }
 .video-empty > span:last-child { font-size: 12px; }
 
-.creation-dock { position: absolute; z-index: 10; left: 50%; bottom: 18px; width: min(1080px, calc(100% - 42px)); transform: translateX(-50%); overflow: hidden; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--panel); box-shadow: 0 20px 70px var(--shadow); }
+.creation-dock { position: absolute; z-index: 10; left: 50%; bottom: 18px; width: min(1240px, calc(100% - 42px)); transform: translateX(-50%); overflow: hidden; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--panel); box-shadow: 0 20px 70px var(--shadow); }
 .materials-panel { max-height: 270px; padding: 12px 14px; overflow: auto; border-bottom: 1px solid var(--line); }
 .materials-head { justify-content: space-between; margin-bottom: 10px; }
 .materials-head strong { font-size: 12px; }
@@ -574,13 +586,13 @@ onUnmounted(() => {
 .dock-controls { min-width: 0; padding: 9px 10px; flex-wrap: wrap; gap: 7px; border-top: 1px solid var(--line); }
 .dock-control { min-height: 36px; padding: 0 10px; font-size: 11px; }
 .dock-control.active { border-color: var(--accent); color: var(--accent); }
-.dock-field { width: 108px; margin: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 6px; }
-.dock-field.model-field { width: 172px; }
+.dock-field { width: 150px; margin: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 6px; }
+.dock-field.model-field { width: 220px; }
 .dock-field.count-field { width: 82px; }
 .dock-field span { color: var(--muted); font-size: 10px; white-space: nowrap; }
 .dock-field select, .dock-field input { min-width: 0; height: 36px; padding: 6px 26px 6px 8px; border-radius: 7px; font-size: 11px; }
 .dock-field input { padding-right: 7px; }
-.duration-slider { width: 150px; min-height: 36px; margin: 0; padding: 0 9px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 7px; border: 1px solid var(--line); border-radius: 7px; }
+.duration-slider { width: 190px; min-height: 36px; margin: 0; padding: 0 9px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 7px; border: 1px solid var(--line); border-radius: 7px; }
 .duration-slider span { color: var(--muted); font-size: 10px; white-space: nowrap; }
 .duration-slider strong { color: var(--text); font-size: 11px; white-space: nowrap; }
 .duration-slider input { min-width: 0; width: 100%; height: 18px; padding: 0; accent-color: var(--accent); }
@@ -642,7 +654,7 @@ onUnmounted(() => {
   .video-empty { min-height: 250px; }
   .creation-dock { position: static; width: auto; margin: 0 10px 12px; transform: none; }
   .dock-controls { align-items: flex-end; }
-  .dock-field.model-field { width: min(100%, 190px); }
+  .dock-field.model-field { width: min(100%, 220px); }
   .price-summary { margin-left: 0; }
   .generate-button { margin-left: auto; }
   .task-drawer.collapsed { display: none; }

@@ -15,6 +15,7 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
+import org.springframework.http.ResponseEntity;
 
 @Service
 @RequiredArgsConstructor
@@ -24,6 +25,7 @@ public class VideoTaskPoller {
     private final VideoGateway gateway;
     private final Sub2apiBillingService billing;
     private final ImageModelConfigService modelConfigs;
+    private final VideoMaterialUploadService storage;
     @Value("${video.poll-max-duration-ms:7200000}") private long maxDuration = 7_200_000;
     @Value("${video.poll-lease-ms:60000}") private long leaseMillis = 60_000;
     @Value("${video.poll-interval-ms:5000}") private long pollInterval = 5_000;
@@ -52,10 +54,12 @@ public class VideoTaskPoller {
             ImageModelConfigService.RuntimeModel runtime = modelConfigs.requireVideo(job.getModelConfigId());
             VideoGateway.Task task = gateway.query(runtime.provider().getBaseUrl(), runtime.provider().getVideoApiKey(),
                     runtime.model().getGenerationPath(), job.getUpstreamTaskId());
+            job.setRawResponses(GenerationAuditJson.append(job.getRawResponses(), "poll", task.raw()));
             long elapsed = Duration.between(job.getCreatedAt(), ImageTime.now()).toMillis();
             if (elapsed >= maxDuration) fail(job, "Video task timed out.", elapsed);
             else if ("FAILED".equals(task.status())) fail(job, task.error() == null ? "Video task failed." : task.error(), elapsed);
-            else if ("COMPLETED".equals(task.status()) && (task.resultUrl() == null || task.resultUrl().isBlank()))
+            else if ("COMPLETED".equals(task.status()) && !isOmni(runtime)
+                    && (task.resultUrl() == null || task.resultUrl().isBlank()))
                 fail(job, "Completed video task returned no result URL.", elapsed);
             else if ("COMPLETED".equals(task.status())) complete(job, task, runtime, elapsed);
             else pending(job, task);
@@ -63,12 +67,24 @@ public class VideoTaskPoller {
     }
 
     private void complete(VideoGenerationJob job, VideoGateway.Task task, ImageModelConfigService.RuntimeModel runtime, long elapsed) {
-        String publicUrl = SafeUpstreamUrl.requirePublicHttps(task.resultUrl());
         GeneratedVideo video = videos.selectOne(new LambdaQueryWrapper<GeneratedVideo>().eq(GeneratedVideo::getJobId, job.getId()));
         if (video == null) {
+            String publicUrl;
+            String mime = "video/mp4";
+            if (isOmni(runtime)) {
+                ResponseEntity<byte[]> content = gateway.download(runtime.provider().getBaseUrl(),
+                        runtime.provider().getVideoApiKey(), runtime.model().getGenerationPath(), job.getUpstreamTaskId());
+                mime = content.getHeaders().getContentType() == null ? null : content.getHeaders().getContentType().toString();
+                java.util.Map<String, Object> response = new java.util.LinkedHashMap<>();
+                response.put("status", content.getStatusCode().value()); response.put("contentType", mime);
+                response.put("body", content.getBody());
+                job.setRawResponses(GenerationAuditJson.append(job.getRawResponses(), "content", response));
+                VideoMaterialUploadService.Uploaded stored = storage.storeGenerated(job.getId(), content.getBody(), mime);
+                publicUrl = stored.url(); mime = stored.mimeType();
+            } else publicUrl = SafeUpstreamUrl.requirePublicHttps(task.resultUrl());
             video = new GeneratedVideo();
             video.setId(UUID.randomUUID().toString().replace("-", "")); video.setJobId(job.getId());
-            video.setPublicUrl(publicUrl); video.setMimeType("video/mp4"); video.setCreatedAt(ImageTime.now()); videos.insert(video);
+            video.setPublicUrl(publicUrl); video.setMimeType(mime); video.setCreatedAt(ImageTime.now()); videos.insert(video);
         }
         if ("RESERVED".equals(job.getBillingStatus())) {
             String usage = billing.settleVideo(job.getId(), job.getBillingApiKeyId(), job.getBillingUserId(), job.getBillingAccountId(),
@@ -102,9 +118,17 @@ public class VideoTaskPoller {
     private void retry(VideoGenerationJob job, Exception error) {
         int attempts = (job.getPollErrorCount() == null ? 0 : job.getPollErrorCount()) + 1;
         long backoff = Math.min(30_000, pollInterval * (1L << Math.min(4, attempts - 1)));
+        job.setRawResponses(GenerationAuditJson.append(job.getRawResponses(), "poll_error", payload(error)));
         job.setPollErrorCount(attempts); job.setBillingError(message(error)); job.setPollLeaseUntil(null);
         job.setNextPollAt(ImageTime.now().plusNanos(backoff * 1_000_000)); job.setUpdatedAt(ImageTime.now()); jobs.updateById(job);
     }
 
     private static String message(Exception error) { return error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage(); }
+    private static Object payload(Exception error) {
+        return error instanceof ImageApiException api && api.getPayload() != null
+                ? api.getPayload() : java.util.Map.of("message", message(error));
+    }
+    private static boolean isOmni(ImageModelConfigService.RuntimeModel runtime) {
+        return runtime.model().getModelKey() != null && runtime.model().getModelKey().startsWith("omni-");
+    }
 }

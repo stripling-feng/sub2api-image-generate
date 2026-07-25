@@ -26,7 +26,7 @@ export type GenerationJob = {
   quality?: string | null;
   style?: string | null;
   count: number;
-  responseFormat: "b64_json" | "url";
+  responseFormat: "url";
   params: Record<string, unknown>;
   status: "PENDING" | "SUCCEEDED" | "FAILED";
   progress?: number;

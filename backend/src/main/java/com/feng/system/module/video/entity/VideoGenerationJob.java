@@ -24,6 +24,8 @@ public class VideoGenerationJob {
     private String resolution;
     private Integer generateAudio;
     @TableField(typeHandler = JsonbTypeHandler.class) private String params;
+    @TableField(typeHandler = JsonbTypeHandler.class) private String rawRequest;
+    @TableField(typeHandler = JsonbTypeHandler.class) private String rawResponses;
     private String upstreamTaskId;
     private String upstreamStatus;
     private Integer progress;

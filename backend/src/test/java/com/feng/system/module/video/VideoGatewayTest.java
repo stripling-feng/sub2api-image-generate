@@ -5,8 +5,10 @@ import org.junit.jupiter.api.Test;
 import org.springframework.boot.web.client.RestTemplateBuilder;
 
 import java.util.Map;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 
 class VideoGatewayTest {
     private final ObjectMapper json = new ObjectMapper();
@@ -62,5 +64,26 @@ class VideoGatewayTest {
         assertEquals("task_x", task.id());
         assertEquals("COMPLETED", task.status());
         assertEquals(100, task.progress());
+    }
+
+    @Test
+    void parsesOmniArrayResultUrl() throws Exception {
+        Object payload = json.readValue("""
+                {"id":"omni_42","status":"completed","data":[{"url":"https://cdn.example.com/omni.mp4"}]}
+                """, Object.class);
+
+        assertEquals("https://cdn.example.com/omni.mp4", gateway.parseTask(payload).resultUrl());
+    }
+
+    @Test
+    void exposesMultipartCreateForRepeatedInputReferences() {
+        assertDoesNotThrow(() -> VideoGateway.class.getMethod("create", String.class, String.class,
+                String.class, Map.class, List.class));
+    }
+
+    @Test
+    void exposesAuthenticatedContentDownload() {
+        assertDoesNotThrow(() -> VideoGateway.class.getMethod("download", String.class, String.class,
+                String.class, String.class));
     }
 }
