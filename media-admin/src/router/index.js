@@ -25,6 +25,12 @@ const routes = [
         meta: { title: '控制台' },
         component: () => import('../views/dashboard/DashboardView.vue'),
       },
+      {
+        path: 'system/docs-config',
+        name: 'system-docs-config',
+        meta: { title: '前台文档配置' },
+        component: () => import('../views/system/PublicDocsConfigView.vue'),
+      },
     ],
   },
 ]

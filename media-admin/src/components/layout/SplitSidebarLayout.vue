@@ -65,7 +65,6 @@ defineEmits(['update:themeDrawerVisible'])
 .rail-item:hover, .rail-item.active { border-color: rgba(37, 99, 235, 0.18); background: var(--primary-soft); color: var(--primary); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5); }
 .sidebar-scroll { flex: 1; min-height: 0; }
 .menu { border-right: 0; background: transparent; }
-.sidebar :deep(.el-scrollbar__view) { min-height: 100%; }
 .sidebar :deep(.el-menu) { border-right: 0; background: transparent; }
 .sidebar-panel :deep(.el-sub-menu__title), .sidebar-panel :deep(.el-menu-item) { height: 42px; margin: 4px 12px; border-radius: 12px; color: #334155; line-height: 42px; transition: background-color .22s ease, color .22s ease, box-shadow .22s ease; }
 .sidebar-panel :deep(.el-menu-item:hover), .sidebar-panel :deep(.el-sub-menu__title:hover) { background: rgba(148, 163, 184, 0.12); }

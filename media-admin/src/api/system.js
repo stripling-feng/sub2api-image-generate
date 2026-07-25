@@ -77,6 +77,11 @@ export const uploadFileApi = {
   },
 }
 
+export const publicDocsConfigApi = {
+  detail: () => request({ url: '/api/system/docs-config', method: 'get' }),
+  update: (data) => request({ url: '/api/system/docs-config', method: 'put', data }),
+}
+
 export const jobTaskApi = {
   list: (params) => request({ url: '/api/tool/job-tasks', method: 'get', params }),
   add: (data) => request({ url: '/api/tool/job-tasks', method: 'post', data }),

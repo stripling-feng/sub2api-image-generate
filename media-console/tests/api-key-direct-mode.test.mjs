@@ -18,7 +18,25 @@ test("image workbench connects by saving the typed API key and loading business 
   assert.match(storeSource, /Promise\.all\(\[this\.loadHistory\(\), this\.loadTemplates\(\)\]\)/);
 });
 
+test("image workbench uploads reference files before submitting generation JSON", () => {
+  assert.doesNotMatch(storeSource, /postForm\("\/api\/images\/generate"/);
+  assert.match(storeSource, /api\.postForm<\{ url: string; publicUrl\?: string \}>\("\/api\/images\/uploads", form\)/);
+  assert.match(storeSource, /referenceImageUrls = await Promise\.all\(referenceImages\.map\(uploadReferenceImage\)\)/);
+  assert.match(storeSource, /api\.post\("\/api\/images\/generate", \{/);
+  assert.match(storeSource, /referenceImageUrls,/);
+  assert.match(storeSource, /maskUrl/);
+});
+
 test("video workbench gates API-key history without requiring a profile object", () => {
   assert.doesNotMatch(videoSource, /if \(!store\.profile\) return/);
   assert.match(videoSource, /if \(!hasApiKey\(\)\) return/);
+});
+
+test("video workbench uploads all materials before submitting generation JSON", () => {
+  assert.doesNotMatch(videoSource, /postForm\("\/api\/videos\/generate"/);
+  assert.match(videoSource, /referenceImageUrls: uploadedImageUrls/);
+  assert.match(videoSource, /firstFrameUrl,/);
+  assert.match(videoSource, /lastFrameUrl/);
+  assert.match(videoSource, /api\.post<\{ requestId: string; count: number \}>\("\/api\/videos\/generate", payload\)/);
+  assert.match(videoSource, /api\.postForm<\{ url: string; publicUrl\?: string \}>\("\/api\/videos\/uploads", body\)/);
 });

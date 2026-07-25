@@ -2,7 +2,6 @@
 import { onMounted, onUnmounted, ref } from "vue";
 import { ArrowRight, BadgeDollarSign, BookOpenText, PlugZap, ShieldCheck } from "lucide-vue-next";
 import * as THREE from "three";
-import DocsDialog from "./DocsDialog.vue";
 
 const featureCards = [
   {
@@ -29,7 +28,6 @@ const particlesMount = ref<HTMLDivElement | null>(null);
 const orbMount = ref<HTMLDivElement | null>(null);
 const orbTransform = ref("rotateX(0deg) rotateY(0deg)");
 const isOrbActive = ref(false);
-const docDialogOpen = ref(false);
 let cleanupParticles: (() => void) | undefined;
 let cleanupOrb: (() => void) | undefined;
 
@@ -279,7 +277,7 @@ function getParentOrigin() {
   return window.location.origin;
 }
 
-function navigateParent(path: "/dashboard" | "/index") {
+function navigateParent(path: "/dashboard" | "/index" | "/docs") {
   const target = `${getParentOrigin()}${path}`;
 
   try {
@@ -324,7 +322,7 @@ onUnmounted(() => {
           天才少年
         </a>
         <div class="index-actions">
-          <button class="index-doc-button" type="button" @click="docDialogOpen = true">
+          <button class="index-doc-button" type="button" @click="navigateParent('/docs')">
             <BookOpenText :size="16" />
             <span>文档</span>
           </button>
@@ -371,8 +369,6 @@ onUnmounted(() => {
         </div>
       </div>
     </section>
-
-    <DocsDialog v-if="docDialogOpen" @close="docDialogOpen = false" />
   </main>
 </template>
 

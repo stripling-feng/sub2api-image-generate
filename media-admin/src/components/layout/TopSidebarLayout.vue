@@ -68,7 +68,6 @@ defineEmits(['update:themeDrawerVisible'])
 .brand-subtitle { font-size: 12px; color: #64748b; }
 .sidebar-scroll { flex: 1; min-height: 0; }
 .menu, .top-menu { border-right: 0; border-bottom: 0; background: transparent; }
-.sidebar :deep(.el-scrollbar__view) { min-height: 100%; }
 .sidebar :deep(.el-menu) { border-right: 0; background: transparent; }
 .sidebar :deep(.el-sub-menu__title), .sidebar :deep(.el-menu-item) { height: 42px; margin: 4px 12px; border-radius: 12px; color: #334155; line-height: 42px; transition: background-color .22s ease, color .22s ease, box-shadow .22s ease; }
 .sidebar :deep(.el-menu-item:hover), .sidebar :deep(.el-sub-menu__title:hover) { background: var(--primary-soft); color: var(--primary); }

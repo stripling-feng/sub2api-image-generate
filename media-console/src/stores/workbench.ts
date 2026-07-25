@@ -21,6 +21,8 @@ type GeneratePayload = {
     file: File;
   }>;
   mask?: { name: string; mimeType: "image/png"; file: File };
+  referenceImageUrls?: string[];
+  maskUrl?: string;
 };
 
 let resultPollTimer: number | undefined;
@@ -210,19 +212,15 @@ export const useWorkbenchStore = defineStore("workbench", {
       ];
       try {
         const referenceImages = payload.referenceImages ?? [];
-        const hasFiles = referenceImages.length > 0 || Boolean(payload.mask);
         let data: { requestId?: string; count?: number; jobs?: GenerationJob[]; job?: GenerationJob };
-        if (hasFiles) {
-          const form = new FormData();
-          const { referenceImages: _referenceImages, mask: _mask, ...jsonPayload } = payload;
-          form.append("payload", JSON.stringify({ ...jsonPayload, referenceImages: [] }));
-          const imageField = referenceImages.length === 1 ? "image" : "image[]";
-          referenceImages.forEach((image) => form.append(imageField, image.file, image.name));
-          if (payload.mask) form.append("mask", payload.mask.file, payload.mask.name);
-          data = await api.postForm("/api/images/generate", form);
-        } else {
-          data = await api.post("/api/images/generate", payload);
-        }
+        const referenceImageUrls = await Promise.all(referenceImages.map(uploadReferenceImage));
+        const maskUrl = payload.mask ? await uploadReferenceImage(payload.mask) : undefined;
+        const { referenceImages: _referenceImages, mask: _mask, ...jsonPayload } = payload;
+        data = await api.post("/api/images/generate", {
+          ...jsonPayload,
+          referenceImageUrls,
+          maskUrl
+        });
         logWorkbench("generate.accepted", {
           optimisticRequestId,
           requestId: data.requestId,
@@ -474,3 +472,12 @@ export const useWorkbenchStore = defineStore("workbench", {
     }
   }
 });
+
+async function uploadReferenceImage(image: { name: string; file: File }) {
+  const form = new FormData();
+  form.append("file", image.file, image.name);
+  const data = await api.postForm<{ url: string; publicUrl?: string }>("/api/images/uploads", form);
+  const url = data.url || data.publicUrl;
+  if (!url) throw new Error("参考图上传失败");
+  return url;
+}

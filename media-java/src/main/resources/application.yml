@@ -58,6 +58,7 @@ image:
   session-days: ${SESSION_DAYS:30}
   cookie-secure: ${IMAGE_COOKIE_SECURE:false}
   upload-dir: ${UPLOAD_DIR:./uploads}
+  upload-public-base-url: ${IMAGE_UPLOAD_PUBLIC_BASE_URL:${VIDEO_UPLOAD_PUBLIC_BASE_URL:https://image.tcboys.de}}
   billing-account-id: ${SUB2API_BILLING_ACCOUNT_ID:}
   charge-on-failure: ${IMAGE2_CHARGE_ON_FAILURE:false}
   request-timeout-ms: ${IMAGE_REQUEST_TIMEOUT_MS:900000}

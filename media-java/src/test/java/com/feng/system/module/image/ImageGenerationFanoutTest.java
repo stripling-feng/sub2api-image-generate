@@ -1,5 +1,6 @@
 package com.feng.system.module.image;
 
+import com.feng.system.module.image.dto.ImageGenerateRequest;
 import com.feng.system.module.image.exception.ImageApiException;
 import com.feng.system.module.image.service.ImageGateway;
 import com.feng.system.module.image.service.ImageGenerationService;
@@ -43,11 +44,12 @@ class ImageGenerationFanoutTest {
         when(configs.requireImage("image-model")).thenReturn(new ImageModelConfigService.RuntimeModel(model, provider));
         ApiProfile profile = new ApiProfile(); profile.setId("profile"); profile.setEncryptedKey("plain-key");
 
-        assertThrows(ImageApiException.class, () -> service.generate(profile, Map.of(
-                "model", "image-model", "prompt", "city", "referenceImages",
-                List.of(Map.of("data", "data:image/png;base64,aGVsbG8="))), List.of(), null));
-        assertThrows(ImageApiException.class, () -> service.generate(profile, Map.of(
-                "model", "image-model", "prompt", "city", "responseFormat", "b64_json"), List.of(), null));
+        ImageGenerateRequest base64Input = request("image-model", "city", 1);
+        base64Input.setReferenceImages(List.of(Map.of("data", "data:image/png;base64,aGVsbG8=")));
+        assertThrows(ImageApiException.class, () -> service.generate(profile, base64Input, List.of(), null));
+        ImageGenerateRequest base64Output = request("image-model", "city", 1);
+        base64Output.setResponseFormat("b64_json");
+        assertThrows(ImageApiException.class, () -> service.generate(profile, base64Output, List.of(), null));
         verifyNoInteractions(jobs);
     }
 
@@ -96,7 +98,7 @@ class ImageGenerationFanoutTest {
         profile.setEncryptedKey("plain-key");
 
         ImageGenerationService.Accepted accepted = service.generate(profile,
-                Map.of("model", "gpt-image-2-4k", "prompt", "city", "count", 4),
+                request("gpt-image-2-4k", "city", 4),
                 List.of(new ImageGateway.Upload("ref.png", "image/png", new byte[] {(byte) 0x89, 'P', 'N', 'G', 13, 10, 26, 10})), null);
 
         ArgumentCaptor<GenerationJob> jobCaptor = ArgumentCaptor.forClass(GenerationJob.class);
@@ -132,5 +134,13 @@ class ImageGenerationFanoutTest {
             if (requestId == null) requestId = String.valueOf(params.get("request_id"));
             else assertEquals(requestId, params.get("request_id"));
         }
+    }
+
+    private static ImageGenerateRequest request(String model, String prompt, int count) {
+        ImageGenerateRequest request = new ImageGenerateRequest();
+        request.setModel(model);
+        request.setPrompt(prompt);
+        request.setCount(count);
+        return request;
     }
 }

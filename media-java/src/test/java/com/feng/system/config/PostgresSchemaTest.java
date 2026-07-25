@@ -4,6 +4,13 @@ import org.junit.jupiter.api.Test;
 import org.springframework.core.io.ClassPathResource;
 
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -92,6 +99,87 @@ class PostgresSchemaTest {
         assertFalse(restore.contains("api_key"));
         assertFalse(restore.contains("base_url"));
         assertFalse(restore.contains("enabled"));
+    }
+
+    @Test
+    void databaseCommentsCoverAllTablesAndColumns() throws Exception {
+        Map<String, Set<String>> schema = new LinkedHashMap<>();
+        for (String migration : List.of(
+                "db/migration/V1__admin_schema.sql",
+                "db/migration/V2__image_workbench_schema.sql",
+                "db/migration/V3__model_configuration.sql",
+                "db/migration/V4__model_pricing_and_document_params.sql",
+                "db/migration/V6__video_generation.sql",
+                "db/migration/V11__generation_request_response_audit.sql")) {
+            collectSchema(read(migration), schema);
+        }
+
+        String comments = read("db/migration/V13__database_comments.sql");
+        for (Map.Entry<String, Set<String>> table : schema.entrySet()) {
+            assertTrue(comments.contains("comment on table " + table.getKey() + " is"), table.getKey());
+            for (String column : table.getValue()) {
+                assertTrue(comments.contains("comment on column " + table.getKey() + "." + column + " is"),
+                        table.getKey() + "." + column);
+            }
+        }
+    }
+
+    private void collectSchema(String sql, Map<String, Set<String>> schema) {
+        Matcher tableMatcher = Pattern.compile("(?is)create\\s+table\\s+([\\w\"]+)\\s*\\((.*?)\\);").matcher(sql);
+        while (tableMatcher.find()) {
+            String tableName = normalizeIdentifier(tableMatcher.group(1));
+            Set<String> columns = schema.computeIfAbsent(tableName, ignored -> new LinkedHashSet<>());
+            for (String definition : splitDefinitions(tableMatcher.group(2))) {
+                addColumnFromDefinition(definition, columns);
+            }
+        }
+
+        Matcher addColumnMatcher = Pattern.compile("(?is)alter\\s+table\\s+([\\w\"]+)\\s+(.*?);").matcher(sql);
+        while (addColumnMatcher.find()) {
+            String tableName = normalizeIdentifier(addColumnMatcher.group(1));
+            Set<String> columns = schema.computeIfAbsent(tableName, ignored -> new LinkedHashSet<>());
+            Matcher columnMatcher = Pattern.compile("(?is)add\\s+column\\s+([\\w\"]+)").matcher(addColumnMatcher.group(2));
+            while (columnMatcher.find()) {
+                columns.add(normalizeIdentifier(columnMatcher.group(1)));
+            }
+        }
+    }
+
+    private void addColumnFromDefinition(String definition, Set<String> columns) {
+        String trimmed = definition.strip();
+        String lower = trimmed.toLowerCase();
+        if (lower.isBlank() || lower.startsWith("constraint ") || lower.startsWith("primary ")
+                || lower.startsWith("unique ") || lower.startsWith("foreign ") || lower.startsWith("check ")) {
+            return;
+        }
+        columns.add(normalizeIdentifier(trimmed.split("\\s+", 2)[0]));
+    }
+
+    private List<String> splitDefinitions(String body) {
+        java.util.ArrayList<String> definitions = new java.util.ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        int depth = 0;
+        for (int i = 0; i < body.length(); i++) {
+            char ch = body.charAt(i);
+            if (ch == '(') depth++;
+            if (ch == ')') depth--;
+            if (ch == ',' && depth == 0) {
+                definitions.add(current.toString());
+                current.setLength(0);
+            } else {
+                current.append(ch);
+            }
+        }
+        definitions.add(current.toString());
+        return definitions;
+    }
+
+    private String normalizeIdentifier(String identifier) {
+        String normalized = identifier.strip().toLowerCase();
+        if (normalized.startsWith("\"") && normalized.endsWith("\"")) {
+            return "\"" + normalized.substring(1, normalized.length() - 1) + "\"";
+        }
+        return normalized;
     }
 
     private String read(String path) throws Exception {

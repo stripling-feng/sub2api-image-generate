@@ -202,22 +202,22 @@ async function generate() {
   if (!hasApiKey()) { await connect(); return; }
   loading.value = true; error.value = "";
   try {
+    const uploadedImageUrls = await Promise.all(referenceImages.value.map(uploadMaterialFile));
     const uploadedVideoUrls = await Promise.all(referenceVideos.value.map(uploadMaterialFile));
     const uploadedAudioUrls = await Promise.all(referenceAudios.value.map(uploadMaterialFile));
+    const firstFrameUrl = firstFrame.value ? await uploadMaterialFile(firstFrame.value) : undefined;
+    const lastFrameUrl = lastFrame.value ? await uploadMaterialFile(lastFrame.value) : undefined;
     const payload = {
       model: form.model, prompt: form.prompt.trim(), count: Math.max(1, Math.min(4, Number(form.count) || 1)),
       duration: form.duration, aspectRatio: form.aspectRatio, resolution: form.resolution,
       generateAudio: form.generateAudio,
-      referenceVideoUrls: uploadedVideoUrls, referenceAudioUrls: uploadedAudioUrls
+      referenceImageUrls: uploadedImageUrls,
+      referenceVideoUrls: uploadedVideoUrls,
+      referenceAudioUrls: uploadedAudioUrls,
+      firstFrameUrl,
+      lastFrameUrl
     };
-    let data: { requestId: string; count: number };
-    if (referenceImages.value.length || firstFrame.value || lastFrame.value) {
-      const body = new FormData(); body.append("payload", JSON.stringify(payload));
-      referenceImages.value.forEach(file => body.append("referenceImage", file, file.name));
-      if (firstFrame.value) body.append("firstFrame", firstFrame.value, firstFrame.value.name);
-      if (lastFrame.value) body.append("lastFrame", lastFrame.value, lastFrame.value.name);
-      data = await api.postForm("/api/videos/generate", body);
-    } else data = await api.post("/api/videos/generate", payload);
+    const data = await api.post<{ requestId: string; count: number }>("/api/videos/generate", payload);
     currentRequestId.value = data.requestId;
     await loadResults(data.requestId);
     startPolling();
@@ -326,8 +326,10 @@ function insertPlaceholder(token: string) {
 }
 async function uploadMaterialFile(file: File) {
   const body = new FormData(); body.append("file", file, file.name);
-  const data = await api.postForm<{ url: string }>("/api/videos/uploads", body);
-  return data.url;
+  const data = await api.postForm<{ url: string; publicUrl?: string }>("/api/videos/uploads", body);
+  const url = data.url || data.publicUrl;
+  if (!url) throw new Error("素材上传失败");
+  return url;
 }
 function selectFrame(event: Event, target: "first" | "last") {
   const input = event.target as HTMLInputElement; const selected = input.files?.[0] ?? null;

@@ -20,7 +20,8 @@ import java.util.UUID;
 @Service
 public class VideoMaterialUploadService {
     private static final long MAX_SIZE = 30L * 1024 * 1024;
-    private static final List<String> EXTENSIONS = List.of("mp4", "webm", "mov", "m4v", "mp3", "wav", "m4a", "aac");
+    private static final List<String> EXTENSIONS = List.of("mp4", "webm", "mov", "m4v", "mp3", "wav", "m4a", "aac",
+            "png", "jpg", "jpeg", "webp");
     private final Path root;
     private final String publicBaseUrl;
 
@@ -34,8 +35,9 @@ public class VideoMaterialUploadService {
         if (file == null || file.isEmpty() || file.getSize() > MAX_SIZE) throw new ImageApiException(422, "Invalid upload file.");
         String ext = extension(file.getOriginalFilename());
         String mime = file.getContentType() == null ? "application/octet-stream" : file.getContentType().toLowerCase(Locale.ROOT);
-        if (!EXTENSIONS.contains(ext) || !(mime.startsWith("video/") || mime.startsWith("audio/") || "application/octet-stream".equals(mime)))
-            throw new ImageApiException(422, "Only video or audio files are supported.");
+        if (!EXTENSIONS.contains(ext) || !(mime.startsWith("video/") || mime.startsWith("audio/")
+                || mime.startsWith("image/") || "application/octet-stream".equals(mime)))
+            throw new ImageApiException(422, "Only video, audio, or image files are supported.");
         String relative = "video-materials/" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE) + "/"
                 + UUID.randomUUID().toString().replace("-", "") + "." + ext;
         Path target = root.resolve(relative).normalize();

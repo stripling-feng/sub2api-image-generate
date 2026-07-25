@@ -34,14 +34,28 @@ class ModulePackageStructureTest {
     }
 
     @Test
-    void videoModelAdminEndpointsLiveInSystemModule() throws IOException {
+    void modelAdminEndpointsLiveInSystemModule() throws IOException {
         Path moduleRoot = moduleRoot();
-        String imageModelAdmin = Files.readString(moduleRoot.resolve("image/controller/ModelAdminController.java"));
+        String imageControllers = readJavaFiles(moduleRoot.resolve("image/controller"));
+        Path systemModelProviderController = moduleRoot.resolve("system/controller/ModelProviderController.java");
+        Path systemImageModelController = moduleRoot.resolve("system/controller/ImageModelController.java");
         Path systemVideoModelController = moduleRoot.resolve("system/controller/VideoModelController.java");
 
-        assertThat(imageModelAdmin)
-                .as("video model admin endpoints should not live in image module")
+        assertThat(imageControllers)
+                .as("model admin endpoints should not live in image module")
+                .doesNotContain("/api/model/providers")
+                .doesNotContain("/api/model/images")
                 .doesNotContain("/api/model/videos");
+        assertThat(systemModelProviderController)
+                .as("model provider admin endpoints should have a system module controller")
+                .exists();
+        assertThat(Files.readString(systemModelProviderController))
+                .contains("/api/model/providers");
+        assertThat(systemImageModelController)
+                .as("image model admin endpoints should have a system module controller")
+                .exists();
+        assertThat(Files.readString(systemImageModelController))
+                .contains("/api/model/images");
         assertThat(systemVideoModelController)
                 .as("video model admin endpoints should have a system module controller")
                 .exists();
@@ -56,5 +70,15 @@ class ModulePackageStructureTest {
         }
 
         return Path.of("media-java/src/main/java/com/feng/system/module");
+    }
+
+    private static String readJavaFiles(Path directory) throws IOException {
+        StringBuilder content = new StringBuilder();
+        try (var files = Files.list(directory)) {
+            for (Path file : files.filter(path -> path.getFileName().toString().endsWith(".java")).toList()) {
+                content.append(Files.readString(file)).append('\n');
+            }
+        }
+        return content.toString();
     }
 }

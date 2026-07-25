@@ -32,7 +32,8 @@ public class ImageGateway {
 
     public GatewayResponse create(String baseUrl, String apiKey, String generationPath, String editPath, Map<String, Object> body,
                                   List<Upload> images, Upload mask) {
-        String endpoint = images.isEmpty() ? configuredEndpoint(baseUrl, generationPath) : configuredEndpoint(baseUrl, editPath);
+        boolean edits = !images.isEmpty() || body.containsKey("image") || body.containsKey("image[]") || body.containsKey("mask");
+        String endpoint = edits ? configuredEndpoint(baseUrl, editPath) : configuredEndpoint(baseUrl, generationPath);
         HttpHeaders headers = auth(apiKey);
         HttpEntity<?> request;
         if (images.isEmpty()) {

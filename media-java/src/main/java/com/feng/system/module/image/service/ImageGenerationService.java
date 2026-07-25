@@ -1,6 +1,8 @@
 package com.feng.system.module.image.service;
 
 import com.feng.system.module.image.exception.ImageApiException;
+import com.feng.system.module.image.dto.ImageGenerateRequest;
+import com.feng.system.module.image.formatter.ImageGenerateRequestFormatters;
 import com.feng.system.module.image.support.GenerationAuditJson;
 import com.feng.system.module.image.support.ImageTime;
 
@@ -26,13 +28,15 @@ public class ImageGenerationService {
     private final Sub2apiBillingService billing;
     private final ImageModelConfigService modelConfigs;
     private final ObjectMapper json;
+    private final ImageGenerateRequestFormatters requestFormatters = new ImageGenerateRequestFormatters();
     @Value("${image.charge-on-failure:false}") private boolean chargeOnFailure;
 
-    public Accepted generate(ApiProfile profile, Map<String, Object> raw, List<ImageGateway.Upload> uploads, ImageGateway.Upload uploadedMask) {
+    public Accepted generate(ApiProfile profile, ImageGenerateRequest request, List<ImageGateway.Upload> uploads, ImageGateway.Upload uploadedMask) {
+        Map<String, Object> raw = request == null ? Map.of() : request.clientPayload();
         GenerationAuditJson.rejectBase64(raw);
-        String modelKey = text(raw.get("model"));
+        String modelKey = request == null ? null : text(request.getModel());
         if (modelKey == null) throw new ImageApiException(422, "Invalid request.");
-        Input input = parse(raw, uploads, uploadedMask, modelConfigs.requireImage(modelKey));
+        Input input = parse(request, uploads, uploadedMask, modelConfigs.requireImage(modelKey));
         String requestId = UUID.randomUUID().toString().replace("-", "").substring(0, 16);
         if (Integer.valueOf(1).equals(input.runtime.model().getAsyncMode())) {
             for (int index = 1; index <= input.count; index++) {
@@ -67,7 +71,7 @@ public class ImageGenerationService {
             job.setRawResponses(GenerationAuditJson.append(job.getRawResponses(), "create", response.payload()));
             ImageGateway.Task task = gateway.parseTask(response.payload());
             if (task.id() == null) throw new ImageApiException(502, "Upstream image task response is missing id.", null, response.payload());
-            job.setUpstreamTaskId(task.id()); job.setUpstreamOperation(input.images.isEmpty() ? "generations" : "edits");
+            job.setUpstreamTaskId(task.id()); job.setUpstreamOperation(input.hasReferenceInputs() ? "edits" : "generations");
             job.setUpstreamStatus(task.status() == null ? "queued" : task.status()); job.setProgress(task.progress());
             job.setNextPollAt(ImageTime.now()); job.setUpdatedAt(ImageTime.now()); jobs.updateById(job);
         } catch (Exception e) {
@@ -116,39 +120,42 @@ public class ImageGenerationService {
         job.setResponseFormat(input.responseFormat); job.setStatus("PENDING"); job.setProgress(0); job.setPollErrorCount(0);
         Map<String, Object> params = new LinkedHashMap<>(input.requestParams); params.put("request_id", requestId);
         params.put("request_index", index); params.put("request_total", total); params.put("response_format", input.responseFormat);
-        params.put("output_format", input.outputFormat); params.put("reference_image_count", input.images.size()); params.put("has_mask", input.mask != null);
+        params.put("output_format", input.outputFormat); params.put("reference_image_count", input.referenceCount()); params.put("has_mask", input.hasMask());
         job.setParams(stringify(params)); job.setRawRequest(GenerationAuditJson.request(auditClient(raw, input))); job.setRawResponses("[]");
         job.setCreatedAt(ImageTime.now()); job.setUpdatedAt(ImageTime.now()); return job;
     }
 
-    @SuppressWarnings("unchecked")
-    private Input parse(Map<String, Object> raw, List<ImageGateway.Upload> uploaded, ImageGateway.Upload uploadedMask,
+    private Input parse(ImageGenerateRequest request, List<ImageGateway.Upload> uploaded, ImageGateway.Upload uploadedMask,
                         ImageModelConfigService.RuntimeModel runtime) {
-        String prompt = text(raw.get("prompt")); String model = runtime.model().getModelKey();
-        int count = number(raw.get("count"), 1);
+        String prompt = text(request.getPrompt()); String model = runtime.model().getModelKey();
+        int count = number(request.getCount(), 1);
         if (prompt == null || count < 1 || count > runtime.model().getMaxCount()) throw new ImageApiException(422, "Invalid request.");
-        if ((raw.get("referenceImages") instanceof List<?> refs && !refs.isEmpty()) || raw.get("mask") != null)
+        if (request.hasJsonImageInputs())
             throw new ImageApiException(422, "Image inputs must use multipart upload.");
         List<ImageGateway.Upload> images = new ArrayList<>(uploaded);
         ImageGateway.Upload mask = uploadedMask;
-        if (images.size() > runtime.model().getMaxReferenceImages() || images.stream().anyMatch(file -> file.bytes().length > 10 * 1024 * 1024 || !validImage(file.bytes())))
+        List<String> imageUrls = request.getReferenceImageUrls() == null ? List.of() : request.getReferenceImageUrls().stream()
+                .filter(url -> url != null && !url.isBlank()).toList();
+        String maskUrl = text(request.getMaskUrl());
+        if (images.size() + imageUrls.size() > runtime.model().getMaxReferenceImages()
+                || images.stream().anyMatch(file -> file.bytes().length > 10 * 1024 * 1024 || !validImage(file.bytes())))
             throw new ImageApiException(422, "Unsupported or invalid image.");
         if (mask != null && (!Integer.valueOf(1).equals(runtime.model().getSupportsMask()) || images.isEmpty()
                 || !"image/png".equals(mask.mimeType()) || !isPng(mask.bytes())))
             throw new ImageApiException(422, "A mask requires a reference image and must be PNG.");
         if (mask != null && !sameDimensions(images.get(0), mask)) throw new ImageApiException(422, "Mask dimensions must match the first reference image.");
-        Map<String, Object> supplied = new LinkedHashMap<>();
-        if (raw.get("parameters") instanceof Map<?, ?> map) supplied.putAll(stringMap(map));
-        if (raw.get("extraParams") instanceof Map<?, ?> map) supplied.putAll(stringMap(map));
-        put(supplied, "size", raw.get("size")); put(supplied, "quality", raw.get("quality"));
-        put(supplied, "aspect_ratio", raw.get("aspectRatio"));
+        if (maskUrl != null && (!Integer.valueOf(1).equals(runtime.model().getSupportsMask()) || imageUrls.isEmpty()))
+            throw new ImageApiException(422, "A mask requires a reference image.");
+        Map<String, Object> supplied = requestFormatters.format(model, request);
+        if (!imageUrls.isEmpty()) supplied.put(imageUrls.size() == 1 ? "image" : "image[]", imageUrls.size() == 1 ? imageUrls.get(0) : imageUrls);
+        if (maskUrl != null) supplied.put("mask", maskUrl);
         Map<String, Object> requestParams = ImageModelRules.merge(runtime.model().getParameterSchema(), runtime.model().getDefaultParams(), supplied);
         GenerationAuditJson.rejectBase64(requestParams);
         String size = value(requestParams.get("size"), "auto");
         String responseFormat = value(requestParams.get("response_format"), "url");
         String outputFormat = text(requestParams.get("output_format"));
-        return new Input(prompt, text(raw.get("negativePrompt")), model, size, text(requestParams.get("quality")),
-                text(raw.get("style")), count, responseFormat, outputFormat, requestParams, images, mask, runtime);
+        return new Input(prompt, text(request.getNegativePrompt()), model, size, text(requestParams.get("quality")),
+                text(request.getStyle()), count, responseFormat, outputFormat, requestParams, images, imageUrls, mask, maskUrl, runtime);
     }
 
     private boolean sameDimensions(ImageGateway.Upload a, ImageGateway.Upload b) {
@@ -171,7 +178,9 @@ public class ImageGenerationService {
     private Map<String, Object> auditClient(Map<String, Object> raw, Input input) {
         Map<String, Object> value = new LinkedHashMap<>(raw);
         if (!input.images.isEmpty()) value.put("uploadedImages", input.images.stream().map(ImageGenerationService::file).toList());
+        if (!input.imageUrls.isEmpty()) value.put("referenceImageUrls", input.imageUrls);
         if (input.mask != null) value.put("uploadedMask", file(input.mask));
+        if (input.maskUrl != null) value.put("maskUrl", input.maskUrl);
         return value;
     }
     private Map<String, Object> auditUpstream(Map<String, Object> body, Input input) {
@@ -191,8 +200,6 @@ public class ImageGenerationService {
         return error instanceof ImageApiException api && api.getPayload() != null
                 ? api.getPayload() : Map.of("message", message(error));
     }
-    private static Map<String, Object> stringMap(Map<?, ?> map) { Map<String,Object> result=new LinkedHashMap<>(); map.forEach((k,v)->result.put(String.valueOf(k),v)); return result; }
-    private static void put(Map<String, Object> map, String key, Object value) { if (value != null) map.put(key, value); }
     private static String text(Object value) { return value instanceof String text && !text.isBlank() ? text : null; }
     private static String value(Object value, String fallback) { String text = text(value); return text == null ? fallback : text; }
     private static int number(Object value, int fallback) { return value instanceof Number n ? n.intValue() : fallback; }
@@ -201,6 +208,11 @@ public class ImageGenerationService {
 
     private record Input(String prompt, String negativePrompt, String model, String size, String quality, String style, int count,
                          String responseFormat, String outputFormat, Map<String, Object> requestParams,
-                         List<ImageGateway.Upload> images, ImageGateway.Upload mask, ImageModelConfigService.RuntimeModel runtime) {}
+                         List<ImageGateway.Upload> images, List<String> imageUrls, ImageGateway.Upload mask, String maskUrl,
+                         ImageModelConfigService.RuntimeModel runtime) {
+        boolean hasReferenceInputs() { return !images.isEmpty() || !imageUrls.isEmpty() || mask != null || maskUrl != null; }
+        boolean hasMask() { return mask != null || maskUrl != null; }
+        int referenceCount() { return images.size() + imageUrls.size(); }
+    }
     public record Accepted(String requestId, int count) {}
 }
