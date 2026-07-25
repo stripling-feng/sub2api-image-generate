@@ -28,5 +28,5 @@ npm run typecheck
 npm run build
 ```
 
-Database migrations live in `backend/src/main/resources/db/migration` and are applied with Flyway CLI 12.11.0 before deploying the backend.
+Database migrations live in `media-java/src/main/resources/db/migration` and are applied with Flyway CLI 12.11.0 before deploying the backend.
 `npm run dev` applies pending migrations automatically; packaged deployments should run `npm run db:migrate` before starting the jar.
