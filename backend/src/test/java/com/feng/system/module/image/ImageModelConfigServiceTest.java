@@ -18,6 +18,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.times;
 
 class ImageModelConfigServiceTest {
 
@@ -47,7 +48,7 @@ class ImageModelConfigServiceTest {
         model.setDefaultParams("{}");
 
         when(models.selectList(any())).thenReturn(List.of(model));
-        when(providers.selectById(1L)).thenReturn(provider);
+        when(providers.selectBatchIds(any())).thenReturn(List.of(provider));
 
         List<Map<String, Object>> result = service.publicImages();
 
@@ -80,7 +81,7 @@ class ImageModelConfigServiceTest {
         model.setDefaultParams("{\"protocol\":\"seedance\"}");
 
         when(models.selectList(any())).thenReturn(List.of(model));
-        when(providers.selectById(1L)).thenReturn(provider);
+        when(providers.selectBatchIds(any())).thenReturn(List.of(provider));
 
         Map<String, Object> result = service.publicVideos().get(0);
 
@@ -108,5 +109,30 @@ class ImageModelConfigServiceTest {
         ArgumentCaptor<AiModel> saved = ArgumentCaptor.forClass(AiModel.class);
         verify(models).insert(saved.capture());
         assertEquals("/v1/videos", saved.getValue().getGenerationPath());
+    }
+
+    @Test
+    void omniTemplatesExposeFixedCapabilities() throws Exception {
+        ModelProviderMapper providers = mock(ModelProviderMapper.class);
+        AiModelMapper models = mock(AiModelMapper.class);
+        ImageModelConfigService service = new ImageModelConfigService(providers, models,
+                mock(GenerationJobMapper.class), new ObjectMapper());
+        ModelProvider provider = new ModelProvider(); provider.setId(1L);
+        when(providers.selectById(1L)).thenReturn(provider);
+
+        for (String key : List.of("omni-fast", "omni-fast-no-water", "omni-v2v", "omni-v2v-no-water")) {
+            AiModel model = new AiModel(); model.setProviderId(1L); model.setModelKey(key);
+            model.setDisplayName(key); model.setUpstreamModel(key); model.setUnitPriceUsd(BigDecimal.ZERO);
+            service.saveVideo(model);
+        }
+
+        ArgumentCaptor<AiModel> saved = ArgumentCaptor.forClass(AiModel.class);
+        verify(models, times(4)).insert(saved.capture());
+        AiModel fast = saved.getAllValues().stream().filter(value -> value.getModelKey().equals("omni-fast")).findFirst().orElseThrow();
+        AiModel v2v = saved.getAllValues().stream().filter(value -> value.getModelKey().equals("omni-v2v")).findFirst().orElseThrow();
+        assertEquals("/v1/videos", fast.getGenerationPath());
+        assertEquals(5, fast.getMaxReferenceImages());
+        assertEquals(true, new ObjectMapper().readValue(fast.getDefaultParams(), Map.class).containsKey("maxImageBytes"));
+        assertEquals(false, new ObjectMapper().readValue(v2v.getDefaultParams(), Map.class).containsKey("requiresVideo"));
     }
 }

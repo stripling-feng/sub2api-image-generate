@@ -25,22 +25,23 @@ public class ImageGenerationService {
     @Value("${image.charge-on-failure:false}") private boolean chargeOnFailure;
 
     public Accepted generate(ApiProfile profile, Map<String, Object> raw, List<ImageGateway.Upload> uploads, ImageGateway.Upload uploadedMask) {
+        GenerationAuditJson.rejectBase64(raw);
         String modelKey = text(raw.get("model"));
         if (modelKey == null) throw new ImageApiException(422, "Invalid request.");
         Input input = parse(raw, uploads, uploadedMask, modelConfigs.requireImage(modelKey));
         String requestId = UUID.randomUUID().toString().replace("-", "").substring(0, 16);
         if (Integer.valueOf(1).equals(input.runtime.model().getAsyncMode())) {
             for (int index = 1; index <= input.count; index++) {
-                try { createAsync(profile, input, requestId, index, input.count); }
+                try { createAsync(profile, input, raw, requestId, index, input.count); }
                 catch (Exception ignored) { /* failed child is already persisted; continue the batch */ }
             }
         }
-        else createBackground(profile, input, requestId);
+        else createBackground(profile, input, raw, requestId);
         return new Accepted(requestId, input.count);
     }
 
-    private void createAsync(ApiProfile profile, Input input, String requestId, int index, int total) {
-        GenerationJob job = newJob(profile, input, requestId, index, total, 1);
+    private void createAsync(ApiProfile profile, Input input, Map<String, Object> raw, String requestId, int index, int total) {
+        GenerationJob job = newJob(profile, input, raw, requestId, index, total, 1);
         jobs.insert(job);
         Sub2apiBillingService.Reservation reservation = null;
         try {
@@ -55,25 +56,32 @@ public class ImageGenerationService {
             }
             Map<String, Object> body = new LinkedHashMap<>(input.requestParams);
             body.put("model", input.runtime.model().getModelKey()); body.put("prompt", prompt(input)); body.put("n", 1);
+            job.setRawRequest(GenerationAuditJson.withUpstream(job.getRawRequest(), auditUpstream(body, input)));
+            jobs.updateById(job);
             ImageGateway.GatewayResponse response = gateway.create(input.runtime.provider().getBaseUrl(), input.runtime.provider().getImageApiKey(),
                     input.runtime.model().getGenerationPath(), input.runtime.model().getEditPath(), body, input.images, input.mask);
+            job.setRawResponses(GenerationAuditJson.append(job.getRawResponses(), "create", response.payload()));
             ImageGateway.Task task = gateway.parseTask(response.payload());
             if (task.id() == null) throw new ImageApiException(502, "Upstream image task response is missing id.", null, response.payload());
             job.setUpstreamTaskId(task.id()); job.setUpstreamOperation(input.images.isEmpty() ? "generations" : "edits");
             job.setUpstreamStatus(task.status() == null ? "queued" : task.status()); job.setProgress(task.progress());
             job.setNextPollAt(ImageTime.now()); job.setUpdatedAt(ImageTime.now()); jobs.updateById(job);
         } catch (Exception e) {
+            if (job.getRawResponses() == null || "[]".equals(job.getRawResponses()))
+                job.setRawResponses(GenerationAuditJson.append(job.getRawResponses(), "create_error", payload(e)));
             failReservation(job, reservation, input, e);
             throw e;
         }
     }
 
-    private void createBackground(ApiProfile profile, Input input, String requestId) {
+    private void createBackground(ApiProfile profile, Input input, Map<String, Object> raw, String requestId) {
         for (int i = 1; i <= input.count; i++) {
-            GenerationJob job = newJob(profile, input, requestId, i, input.count, 1);
+            GenerationJob job = newJob(profile, input, raw, requestId, i, input.count, 1);
             jobs.insert(job);
             Map<String, Object> body = new LinkedHashMap<>(input.requestParams);
             body.put("model", input.runtime.model().getModelKey()); body.put("prompt", prompt(input)); body.put("n", 1);
+            job.setRawRequest(GenerationAuditJson.withUpstream(job.getRawRequest(), auditUpstream(body, input)));
+            jobs.updateById(job);
             worker.run(job.getId(), input.runtime.provider().getBaseUrl(), input.runtime.provider().getImageApiKey(),
                     input.runtime.model().getGenerationPath(), input.runtime.model().getEditPath(), body, input.images, input.mask);
         }
@@ -96,7 +104,7 @@ public class ImageGenerationService {
         job.setCompletedAt(ImageTime.now()); job.setUpdatedAt(ImageTime.now()); jobs.updateById(job);
     }
 
-    private GenerationJob newJob(ApiProfile profile, Input input, String requestId, int index, int total, int count) {
+    private GenerationJob newJob(ApiProfile profile, Input input, Map<String, Object> raw, String requestId, int index, int total, int count) {
         GenerationJob job = new GenerationJob();
         job.setModelConfigId(input.runtime.model().getId());
         job.setId(id()); job.setProfileId(profile.getId()); job.setPrompt(input.prompt); job.setNegativePrompt(input.negativePrompt);
@@ -105,7 +113,8 @@ public class ImageGenerationService {
         Map<String, Object> params = new LinkedHashMap<>(input.requestParams); params.put("request_id", requestId);
         params.put("request_index", index); params.put("request_total", total); params.put("response_format", input.responseFormat);
         params.put("output_format", input.outputFormat); params.put("reference_image_count", input.images.size()); params.put("has_mask", input.mask != null);
-        job.setParams(stringify(params)); job.setCreatedAt(ImageTime.now()); job.setUpdatedAt(ImageTime.now()); return job;
+        job.setParams(stringify(params)); job.setRawRequest(GenerationAuditJson.request(auditClient(raw, input))); job.setRawResponses("[]");
+        job.setCreatedAt(ImageTime.now()); job.setUpdatedAt(ImageTime.now()); return job;
     }
 
     @SuppressWarnings("unchecked")
@@ -114,10 +123,10 @@ public class ImageGenerationService {
         String prompt = text(raw.get("prompt")); String model = runtime.model().getModelKey();
         int count = number(raw.get("count"), 1);
         if (prompt == null || count < 1 || count > runtime.model().getMaxCount()) throw new ImageApiException(422, "Invalid request.");
+        if ((raw.get("referenceImages") instanceof List<?> refs && !refs.isEmpty()) || raw.get("mask") != null)
+            throw new ImageApiException(422, "Image inputs must use multipart upload.");
         List<ImageGateway.Upload> images = new ArrayList<>(uploaded);
-        if (images.isEmpty() && raw.get("referenceImages") instanceof List<?> refs) for (Object ref : refs) images.add(base64Upload(ref));
         ImageGateway.Upload mask = uploadedMask;
-        if (mask == null && raw.get("mask") != null) mask = base64Upload(raw.get("mask"));
         if (images.size() > runtime.model().getMaxReferenceImages() || images.stream().anyMatch(file -> file.bytes().length > 10 * 1024 * 1024 || !validImage(file.bytes())))
             throw new ImageApiException(422, "Unsupported or invalid image.");
         if (mask != null && (!Integer.valueOf(1).equals(runtime.model().getSupportsMask()) || images.isEmpty()
@@ -130,6 +139,7 @@ public class ImageGenerationService {
         put(supplied, "size", raw.get("size")); put(supplied, "quality", raw.get("quality"));
         put(supplied, "aspect_ratio", raw.get("aspectRatio"));
         Map<String, Object> requestParams = ImageModelRules.merge(runtime.model().getParameterSchema(), runtime.model().getDefaultParams(), supplied);
+        GenerationAuditJson.rejectBase64(requestParams);
         String size = value(requestParams.get("size"), "auto");
         String responseFormat = value(requestParams.get("response_format"), "url");
         String outputFormat = text(requestParams.get("output_format"));
@@ -137,12 +147,6 @@ public class ImageGenerationService {
                 text(raw.get("style")), count, responseFormat, outputFormat, requestParams, images, mask, runtime);
     }
 
-    private ImageGateway.Upload base64Upload(Object value) {
-        if (!(value instanceof Map<?, ?> map)) throw new ImageApiException(422, "Invalid image payload.");
-        try { return new ImageGateway.Upload(value(map.get("name"), "image"), value(map.get("mimeType"), "application/octet-stream"),
-                Base64.getDecoder().decode(value(map.get("data"), ""))); }
-        catch (Exception e) { throw new ImageApiException(422, "Invalid image payload."); }
-    }
     private boolean sameDimensions(ImageGateway.Upload a, ImageGateway.Upload b) {
         try { var one = ImageIO.read(new ByteArrayInputStream(a.bytes())); var two = ImageIO.read(new ByteArrayInputStream(b.bytes()));
             return one != null && two != null && one.getWidth() == two.getWidth() && one.getHeight() == two.getHeight(); }
@@ -160,6 +164,29 @@ public class ImageGenerationService {
     }
     private String prompt(Input input) { return input.negativePrompt == null ? input.prompt : input.prompt + "\n\nNegative prompt: " + input.negativePrompt; }
     private String stringify(Object value) { try { return json.writeValueAsString(value); } catch (Exception e) { throw new ImageApiException(422, "Invalid request."); } }
+    private Map<String, Object> auditClient(Map<String, Object> raw, Input input) {
+        Map<String, Object> value = new LinkedHashMap<>(raw);
+        if (!input.images.isEmpty()) value.put("uploadedImages", input.images.stream().map(ImageGenerationService::file).toList());
+        if (input.mask != null) value.put("uploadedMask", file(input.mask));
+        return value;
+    }
+    private Map<String, Object> auditUpstream(Map<String, Object> body, Input input) {
+        Map<String, Object> value = new LinkedHashMap<>(body);
+        if (!input.images.isEmpty()) {
+            String field = input.images.size() == 1 ? "image" : "image[]";
+            Object files = input.images.size() == 1 ? file(input.images.get(0)) : input.images.stream().map(ImageGenerationService::file).toList();
+            value.put(field, files);
+        }
+        if (input.mask != null) value.put("mask", file(input.mask));
+        return value;
+    }
+    private static Map<String, Object> file(ImageGateway.Upload value) {
+        return Map.of("name", value.name(), "mimeType", value.mimeType(), "sizeBytes", value.bytes().length);
+    }
+    private static Object payload(Exception error) {
+        return error instanceof ImageApiException api && api.getPayload() != null
+                ? api.getPayload() : Map.of("message", message(error));
+    }
     private static Map<String, Object> stringMap(Map<?, ?> map) { Map<String,Object> result=new LinkedHashMap<>(); map.forEach((k,v)->result.put(String.valueOf(k),v)); return result; }
     private static void put(Map<String, Object> map, String key, Object value) { if (value != null) map.put(key, value); }
     private static String text(Object value) { return value instanceof String text && !text.isBlank() ? text : null; }

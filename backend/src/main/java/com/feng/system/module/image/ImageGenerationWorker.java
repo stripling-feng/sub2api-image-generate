@@ -25,10 +25,12 @@ public class ImageGenerationWorker {
     public void run(String jobId, String baseUrl, String apiKey, String generationPath, String editPath, Map<String, Object> body,
                     List<ImageGateway.Upload> images, ImageGateway.Upload mask) {
         long started = System.currentTimeMillis();
+        String responses = "[]";
         try {
             String target = upstreamOverride == null || upstreamOverride.isBlank()
                     ? SafeUpstreamUrl.requirePublicHttps(baseUrl) : upstreamOverride;
             ImageGateway.GatewayResponse response = gateway.create(target, apiKey, generationPath, editPath, body, images, mask);
+            responses = GenerationAuditJson.append(responses, "create", response.payload());
             List<ImageGateway.Item> items = gateway.items(response.payload());
             if (items.isEmpty()) throw new ImageApiException(502, "sub2api returned no images.");
             int index = 0;
@@ -38,15 +40,22 @@ public class ImageGenerationWorker {
             }
             GenerationJob update = new GenerationJob();
             update.setId(jobId); update.setStatus("SUCCEEDED"); update.setProgress(100);
+            update.setRawResponses(responses);
             update.setDurationMs((int) (System.currentTimeMillis() - started)); update.setCompletedAt(ImageTime.now()); update.setUpdatedAt(ImageTime.now());
             jobs.updateById(update);
         } catch (Exception e) {
+            responses = GenerationAuditJson.append(responses, "failure", payload(e));
             GenerationJob update = new GenerationJob();
             update.setId(jobId); update.setStatus("FAILED"); update.setErrorMessage(message(e));
+            update.setRawResponses(responses);
             update.setDurationMs((int) (System.currentTimeMillis() - started)); update.setCompletedAt(ImageTime.now()); update.setUpdatedAt(ImageTime.now());
             jobs.updateById(update);
         }
     }
 
     private static String message(Exception e) { return e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(); }
+    private static Object payload(Exception error) {
+        return error instanceof ImageApiException api && api.getPayload() != null
+                ? api.getPayload() : Map.of("message", message(error));
+    }
 }

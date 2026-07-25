@@ -55,6 +55,7 @@ public class ImageTaskPoller {
             ImageModelConfigService.RuntimeModel source = modelConfigs.requireImage(job.getModelConfigId());
             ImageGateway.Task task = gateway.task(source.provider().getBaseUrl(), source.provider().getImageApiKey(),
                     source.model().getGenerationPath(), source.model().getEditPath(), job.getUpstreamOperation(), job.getUpstreamTaskId());
+            job.setRawResponses(GenerationAuditJson.append(job.getRawResponses(), "poll", task.raw()));
             long elapsed = Duration.between(job.getCreatedAt(), ImageTime.now()).toMillis();
             switch (ImageTaskRules.decide(task.status(), elapsed, maxDuration)) {
                 case COMPLETED -> complete(job, task, source, elapsed);
@@ -72,6 +73,8 @@ public class ImageTaskPoller {
             if (!storage.exists(job.getId(), 0)) {
                 ImageGateway.Download content = gateway.content(source.provider().getBaseUrl(), source.provider().getImageApiKey(),
                         source.model().getGenerationPath(), job.getUpstreamTaskId());
+                job.setRawResponses(GenerationAuditJson.append(job.getRawResponses(), "content",
+                        java.util.Map.of("mimeType", content.mimeType(), "body", content.bytes())));
                 storage.save(job.getId(), 0, content.bytes(), content.mimeType());
             }
         } else {
@@ -120,9 +123,14 @@ public class ImageTaskPoller {
     private void retry(GenerationJob job, Exception error) {
         int errors = (job.getPollErrorCount() == null ? 0 : job.getPollErrorCount()) + 1;
         long backoff = Math.min(30_000, pollInterval * (1L << Math.min(4, Math.max(0, errors - 1))));
+        job.setRawResponses(GenerationAuditJson.append(job.getRawResponses(), "poll_error", payload(error)));
         job.setPollErrorCount(errors); job.setPollLeaseUntil(null); job.setNextPollAt(ImageTime.now().plusNanos(backoff * 1_000_000));
         job.setBillingError(message(error)); job.setUpdatedAt(ImageTime.now()); jobs.updateById(job);
     }
 
     private static String message(Exception e) { return e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(); }
+    private static Object payload(Exception error) {
+        return error instanceof ImageApiException api && api.getPayload() != null
+                ? api.getPayload() : java.util.Map.of("message", message(error));
+    }
 }

@@ -25,6 +25,8 @@ public class GenerationJob {
     private Integer count;
     @TableField("\"responseFormat\"") private String responseFormat;
     @TableField(typeHandler = JsonbTypeHandler.class) private String params;
+    @TableField(typeHandler = JsonbTypeHandler.class) private String rawRequest;
+    @TableField(typeHandler = JsonbTypeHandler.class) private String rawResponses;
     private String status;
     @TableField("\"errorMessage\"") private String errorMessage;
     @TableField("\"durationMs\"") private Integer durationMs;

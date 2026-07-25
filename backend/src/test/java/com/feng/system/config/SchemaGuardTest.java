@@ -17,7 +17,7 @@ class SchemaGuardTest {
     @Test
     void requiresCurrentMigrationVersion() {
         JdbcTemplate jdbc = mock(JdbcTemplate.class);
-        when(jdbc.queryForObject(anyString(), eq(Integer.class))).thenReturn(6, 7);
+        when(jdbc.queryForObject(anyString(), eq(Integer.class))).thenReturn(10, 11);
         SchemaGuard guard = new SchemaGuard(jdbc);
 
         assertThrows(IllegalStateException.class, guard::verify);

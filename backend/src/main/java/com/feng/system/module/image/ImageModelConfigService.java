@@ -261,6 +261,11 @@ public class ImageModelConfigService {
                  {"key":"aspectRatio","label":"画面比例","type":"select","default":"16:9","options":["1:1","16:9","9:16","4:3","3:4","3:2","2:3"]},
                  {"key":"resolution","label":"清晰度","type":"select","default":"720p","options":["480p","720p"]}]
                 """;
+        String omniParams = """
+                [{"key":"duration","label":"Duration","type":"select","default":10,"options":[10]},
+                 {"key":"aspectRatio","label":"Aspect ratio","type":"select","default":"16:9","options":["16:9","9:16"]},
+                 {"key":"resolution","label":"Resolution","type":"select","default":"720p","options":["720p"]}]
+                """;
         switch (model.getModelKey() == null ? "" : model.getModelKey()) {
             case "seedance-2.0", "seedance-2.0-fast", "seedance-2.0-mini" -> {
                 model.setGenerationPath("/v1/videos"); model.setMaxReferenceImages(4);
@@ -268,15 +273,25 @@ public class ImageModelConfigService {
                 model.setDefaultParams("{\"protocol\":\"seedance\",\"images\":4,\"videos\":3,\"audios\":1,\"frameInputs\":true}");
             }
             case "grok-video" -> {
-                model.setGenerationPath("/v1/video"); model.setMaxReferenceImages(7);
+                model.setGenerationPath("/v1/videos"); model.setMaxReferenceImages(7);
                 model.setParameterSchema(grokParams);
                 model.setDefaultParams("{\"protocol\":\"grok\",\"images\":7,\"videos\":1,\"audios\":0,\"frameInputs\":false}");
             }
             case "grok-video-1.5" -> {
-                model.setGenerationPath("/v1/video"); model.setMaxReferenceImages(1);
+                model.setGenerationPath("/v1/videos"); model.setMaxReferenceImages(1);
                 model.setUpstreamModel("grok-video-1.5");
                 model.setParameterSchema(grokParams.replace("[\"1:1\",\"16:9\",\"9:16\",\"4:3\",\"3:4\",\"3:2\",\"2:3\"]", "[\"16:9\",\"9:16\"]"));
                 model.setDefaultParams("{\"protocol\":\"grok\",\"images\":1,\"videos\":0,\"audios\":0,\"frameInputs\":false,\"requiresImage\":true}");
+            }
+            case "omni-fast", "omni-fast-no-water" -> {
+                model.setGenerationPath("/v1/videos"); model.setMaxReferenceImages(5);
+                model.setParameterSchema(omniParams);
+                model.setDefaultParams("{\"protocol\":\"omni-fast\",\"images\":5,\"videos\":0,\"audios\":0,\"frameInputs\":true,\"maxImageBytes\":5242880}");
+            }
+            case "omni-v2v", "omni-v2v-no-water" -> {
+                model.setGenerationPath("/v1/videos"); model.setMaxReferenceImages(2);
+                model.setParameterSchema(omniParams);
+                model.setDefaultParams("{\"protocol\":\"omni-v2v\",\"images\":2,\"videos\":2,\"audios\":0,\"frameInputs\":false,\"maxImageBytes\":8388608,\"maxVideoBytes\":8388608}");
             }
             default -> throw new BusinessException("请选择支持的视频模型模板");
         }

@@ -24,6 +24,7 @@ public class VideoQueryService {
     private final VideoGenerationJobMapper jobs;
     private final GeneratedVideoMapper videos;
     private final ObjectMapper json;
+    private final VideoMaterialUploadService storage;
 
     public Map<String, Object> history(String profileId, int requestedPage, int requestedPageSize) {
         int page = Math.max(1, requestedPage); int pageSize = Math.min(50, Math.max(1, requestedPageSize));
@@ -46,6 +47,7 @@ public class VideoQueryService {
         VideoGenerationJob job = video == null ? null : jobs.selectById(video.getJobId());
         if (job == null || !profileId.equals(job.getProfileId())) throw new ImageApiException(404, "Video not found.");
         videos.deleteById(videoId);
+        storage.deleteGenerated(job.getId());
     }
 
     @Transactional
@@ -54,12 +56,17 @@ public class VideoQueryService {
         if (job == null || !profileId.equals(job.getProfileId())) throw new ImageApiException(404, "Video job not found.");
         if ("PENDING".equals(job.getStatus())) throw new ImageApiException(409, "Pending video jobs cannot be deleted.");
         jobs.deleteById(jobId);
+        storage.deleteGenerated(jobId);
     }
 
     @Transactional
     public int deleteJobs(String profileId) {
-        return jobs.delete(new LambdaQueryWrapper<VideoGenerationJob>().eq(VideoGenerationJob::getProfileId, profileId)
-                .ne(VideoGenerationJob::getStatus, "PENDING"));
+        LambdaQueryWrapper<VideoGenerationJob> query = new LambdaQueryWrapper<VideoGenerationJob>()
+                .eq(VideoGenerationJob::getProfileId, profileId).ne(VideoGenerationJob::getStatus, "PENDING");
+        List<VideoGenerationJob> deleting = jobs.selectList(query);
+        int count = jobs.delete(query);
+        deleting.forEach(job -> storage.deleteGenerated(job.getId()));
+        return count;
     }
 
     private List<Map<String, Object>> map(List<VideoGenerationJob> values) {
