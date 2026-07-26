@@ -20,6 +20,9 @@ import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -57,9 +60,10 @@ class VideoApiContractTest {
 
         mvc.perform(post("/api/videos/generate").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"model\":\"seedance-2.0\",\"prompt\":\"city\",\"count\":2}"))
-                .andExpect(status().isAccepted())
-                .andExpect(jsonPath("$.requestId").value("request-1"))
-                .andExpect(jsonPath("$.count").value(2));
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.requestId").value("request-1"))
+                .andExpect(jsonPath("$.data.count").value(2));
         mvc.perform(multipart("/api/videos/generate")
                         .file("referenceImage", "fake-png".getBytes())
                         .param("payload", "{\"model\":\"seedance-2.0\",\"prompt\":\"city\"}"))
@@ -81,15 +85,15 @@ class VideoApiContractTest {
         ApiProfile profile = new ApiProfile(); profile.setId("profile-1");
         when(sessions.requireProfile(any(), any())).thenReturn(profile);
         when(uploads.upload(any(), any())).thenReturn(new VideoMaterialUploadService.Uploaded(
-                "https://media.example.com/uploads/video-materials/a.mp4", "/tmp/a.mp4", "video/mp4", 3));
+                "https://media.example.com/material/" + today() + "/a.mp4", "/tmp/a.mp4", "video/mp4", 3));
         MockMultipartFile file = new MockMultipartFile("file", "a.mp4", "video/mp4", new byte[]{1, 2, 3});
         MockMvc mvc = MockMvcBuilders.standaloneSetup(new VideoGenerationController(sessions, generation, uploads))
                 .setControllerAdvice(new ImageApiExceptionHandler()).build();
 
         mvc.perform(multipart("/api/videos/uploads").file(file))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.url").value("https://media.example.com/uploads/video-materials/a.mp4"))
-                .andExpect(jsonPath("$.mimeType").value("video/mp4"));
+                .andExpect(jsonPath("$.data.url").value("https://media.example.com/material/" + today() + "/a.mp4"))
+                .andExpect(jsonPath("$.data.mimeType").value("video/mp4"));
     }
 
     @Test
@@ -100,14 +104,18 @@ class VideoApiContractTest {
         ApiProfile profile = new ApiProfile(); profile.setId("profile-1");
         when(sessions.requireProfile(any(), any())).thenReturn(profile);
         when(uploads.upload(any(), any())).thenReturn(new VideoMaterialUploadService.Uploaded(
-                "https://media.example.com/uploads/video-materials/frame.png", "/tmp/frame.png", "image/png", 8));
+                "https://media.example.com/material/" + today() + "/frame.png", "/tmp/frame.png", "image/png", 8));
         MockMultipartFile file = new MockMultipartFile("file", "frame.png", "image/png", new byte[]{(byte) 0x89, 'P', 'N', 'G', 13, 10, 26, 10});
         MockMvc mvc = MockMvcBuilders.standaloneSetup(new VideoGenerationController(sessions, generation, uploads))
                 .setControllerAdvice(new ImageApiExceptionHandler()).build();
 
         mvc.perform(multipart("/api/videos/uploads").file(file))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.url").value("https://media.example.com/uploads/video-materials/frame.png"))
-                .andExpect(jsonPath("$.mimeType").value("image/png"));
+                .andExpect(jsonPath("$.data.url").value("https://media.example.com/material/" + today() + "/frame.png"))
+                .andExpect(jsonPath("$.data.mimeType").value("image/png"));
+    }
+
+    private static String today() {
+        return LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE);
     }
 }

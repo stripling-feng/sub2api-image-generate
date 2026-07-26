@@ -18,8 +18,12 @@ X-API-Key: <用户填写的 API Key>
 
 ```json
 {
-  "requestId": "string",
-  "count": 1
+  "code": 200,
+  "message": "success",
+  "data": {
+    "requestId": "string",
+    "count": 1
+  }
 }
 ```
 

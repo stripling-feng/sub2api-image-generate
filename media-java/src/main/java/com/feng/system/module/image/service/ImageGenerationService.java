@@ -8,29 +8,44 @@ import com.feng.system.module.image.support.ImageTime;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.feng.system.module.image.entity.ApiProfile;
-import com.feng.system.module.image.entity.GenerationJob;
-import com.feng.system.module.image.mapper.GenerationJobMapper;
+import com.feng.system.module.media.entity.MediaTask;
+import com.feng.system.module.media.mapper.MediaTaskMapper;
+import com.feng.system.module.media.service.MediaBillingRecordService;
+import com.feng.system.module.media.service.MediaTaskData;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import javax.imageio.ImageIO;
-import java.io.ByteArrayInputStream;
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.*;
 
+/**
+ * 图片生成核心服务：负责校验并解析生成请求、创建任务记录、
+ * 按模型的异步/后台模式分发到上游，并处理预扣费、结算与失败回滚等计费流转。
+ */
 @Service
 @RequiredArgsConstructor
 public class ImageGenerationService {
-    private final GenerationJobMapper jobs;
+    private final MediaTaskMapper jobs;
     private final ImageGateway gateway;
     private final ImageGenerationWorker worker;
     private final Sub2apiBillingService billing;
+    private final MediaBillingRecordService mediaBilling;
     private final ImageModelConfigService modelConfigs;
     private final ObjectMapper json;
     private final ImageGenerateRequestFormatters requestFormatters = new ImageGenerateRequestFormatters();
     @Value("${image.charge-on-failure:false}") private boolean chargeOnFailure;
 
+    /**
+     * 受理一次图片生成请求：校验参数后按数量拆分为多个子任务提交。
+     * 异步模式下同步提交上游任务并预扣费；后台模式下交由 Worker 线程异步执行。
+     *
+     * @param profile      调用方 API 密钥档案
+     * @param uploads      旧文件上传参数，生成链路不再使用
+     * @param uploadedMask 旧蒙版上传参数，生成链路不再使用
+     * @return 本批请求的 requestId 与任务数量
+     */
     public Accepted generate(ApiProfile profile, ImageGenerateRequest request, List<ImageGateway.Upload> uploads, ImageGateway.Upload uploadedMask) {
         Map<String, Object> raw = request == null ? Map.of() : request.clientPayload();
         GenerationAuditJson.rejectBase64(raw);
@@ -38,6 +53,7 @@ public class ImageGenerationService {
         if (modelKey == null) throw new ImageApiException(422, "Invalid request.");
         Input input = parse(request, uploads, uploadedMask, modelConfigs.requireImage(modelKey));
         String requestId = UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+        // asyncMode=1：逐张同步提交上游异步任务；否则走后台线程整批执行
         if (Integer.valueOf(1).equals(input.runtime.model().getAsyncMode())) {
             for (int index = 1; index <= input.count; index++) {
                 try { createAsync(profile, input, raw, requestId, index, input.count); }
@@ -48,150 +64,172 @@ public class ImageGenerationService {
         return new Accepted(requestId, input.count);
     }
 
+    // 异步模式：先预扣费（reserve），再向上游提交任务；提交成功记录任务 ID，失败则回滚计费
     private void createAsync(ApiProfile profile, Input input, Map<String, Object> raw, String requestId, int index, int total) {
-        GenerationJob job = newJob(profile, input, raw, requestId, index, total, 1);
-        jobs.insert(job);
+        MediaTask job = newJob(profile, input, raw, requestId, index, total, 1);
+        mediaBilling.begin(job, input.runtime.model().getUnitPriceUsd(), true);
         Sub2apiBillingService.Reservation reservation = null;
         try {
+            // 预扣费：先冻结额度，任务状态置为 RESERVED
             reservation = billing.reserve(profile.getEncryptedKey(), 1, input.runtime.model().getUnitPriceUsd());
-            job.setBillingStatus("RESERVED"); job.setBillingAmount(reservation.amountUsd()); job.setBillingApiKeyId(reservation.apiKeyId());
-            job.setBillingUserId(reservation.userId()); job.setBillingAccountId(reservation.accountId()); job.setBillingReservedAt(ImageTime.now());
-            jobs.updateById(job);
+            mediaBilling.reserved(job.getId(), reservation);
+            job.setBillingStatus("RESERVED");
+            job.setBillingAmount(reservation.amountUsd());
+            // 配置为失败也计费时，提交前即直接结算（CHARGED）
             if (chargeOnFailure) {
                 String usageId = billing.settle(job.getId(), reservation.apiKeyId(), reservation.userId(), reservation.accountId(),
-                        reservation.amountUsd(), 1, input.size, input.images.isEmpty() ? "generations" : "edits", null);
-                job.setBillingStatus("CHARGED"); job.setBillingUsageLogId(usageId); job.setBillingSettledAt(ImageTime.now()); jobs.updateById(job);
+                        reservation.amountUsd(), 1, input.size, null);
+                mediaBilling.charged(job.getId(), usageId);
+                job.setBillingStatus("CHARGED");
             }
-            Map<String, Object> body = new LinkedHashMap<>(input.requestParams);
-            body.put("model", input.runtime.model().getModelKey()); body.put("prompt", prompt(input)); body.put("n", 1);
-            job.setRawRequest(GenerationAuditJson.withUpstream(job.getRawRequest(), auditUpstream(body, input)));
+            Map<String, Object> body = upstreamBody(input);
+            job.setUpstreamRequest(GenerationAuditJson.stringify(auditUpstream(body, input)));
             jobs.updateById(job);
             ImageGateway.GatewayResponse response = gateway.create(input.runtime.provider().getBaseUrl(), input.runtime.provider().getImageApiKey(),
-                    input.runtime.model().getGenerationPath(), input.runtime.model().getEditPath(), body, input.images, input.mask);
-            job.setRawResponses(GenerationAuditJson.append(job.getRawResponses(), "create", response.payload()));
+                    input.runtime.model().getGenerationPath(), body);
+            job.setUpstreamResponse(GenerationAuditJson.stringify(response.payload()));
             ImageGateway.Task task = gateway.parseTask(response.payload());
             if (task.id() == null) throw new ImageApiException(502, "Upstream image task response is missing id.", null, response.payload());
-            job.setUpstreamTaskId(task.id()); job.setUpstreamOperation(input.hasReferenceInputs() ? "edits" : "generations");
-            job.setUpstreamStatus(task.status() == null ? "queued" : task.status()); job.setProgress(task.progress());
-            job.setNextPollAt(ImageTime.now()); job.setUpdatedAt(ImageTime.now()); jobs.updateById(job);
+            job.setUpstreamTaskId(task.id()); job.setUpstreamOperation("generations");
+            setTaskData(job, "upstreamStatus", task.status() == null ? "queued" : task.status());
+            job.setProgress(task.progress());
+            job.setUpdatedAt(ImageTime.now()); jobs.updateById(job);
         } catch (Exception e) {
-            if (job.getRawResponses() == null || "[]".equals(job.getRawResponses()))
-                job.setRawResponses(GenerationAuditJson.append(job.getRawResponses(), "create_error", payload(e)));
+            // 保留失败现场：若尚未记录上游响应，则把异常负载写入审计字段
+            if (job.getUpstreamResponse() == null || "{}".equals(job.getUpstreamResponse()) || "[]".equals(job.getUpstreamResponse()))
+                job.setUpstreamResponse(GenerationAuditJson.stringify(payload(e)));
             failReservation(job, reservation, input, e);
             throw e;
         }
     }
 
+    // 后台模式：不预扣费，任务落库后交给 Worker 异步线程同步调用上游并保存结果
     private void createBackground(ApiProfile profile, Input input, Map<String, Object> raw, String requestId) {
         for (int i = 1; i <= input.count; i++) {
-            GenerationJob job = newJob(profile, input, raw, requestId, i, input.count, 1);
-            jobs.insert(job);
-            Map<String, Object> body = new LinkedHashMap<>(input.requestParams);
-            body.put("model", input.runtime.model().getModelKey()); body.put("prompt", prompt(input)); body.put("n", 1);
-            job.setRawRequest(GenerationAuditJson.withUpstream(job.getRawRequest(), auditUpstream(body, input)));
+            MediaTask job = newJob(profile, input, raw, requestId, i, input.count, 1);
+            mediaBilling.begin(job, BigDecimal.ZERO, false);
+            Map<String, Object> body = upstreamBody(input);
+            job.setUpstreamRequest(GenerationAuditJson.stringify(auditUpstream(body, input)));
             jobs.updateById(job);
             worker.run(job.getId(), input.runtime.provider().getBaseUrl(), input.runtime.provider().getImageApiKey(),
-                    input.runtime.model().getGenerationPath(), input.runtime.model().getEditPath(), body, input.images, input.mask);
+                    input.runtime.model().getGenerationPath(), body);
         }
     }
 
-    private void failReservation(GenerationJob job, Sub2apiBillingService.Reservation reservation, Input input, Exception failure) {
+    // 创建失败时的计费收尾：按配置决定失败结算（CHARGED）或释放预扣（RELEASED），并把任务标记为 FAILED
+    private void failReservation(MediaTask job, Sub2apiBillingService.Reservation reservation, Input input, Exception failure) {
         String billingStatus = reservation == null ? "FAILED" : job.getBillingStatus();
         try {
             if (reservation != null && !"CHARGED".equals(job.getBillingStatus())) {
                 if (chargeOnFailure) {
                     String usage = billing.settle(job.getId(), reservation.apiKeyId(), reservation.userId(), reservation.accountId(), reservation.amountUsd(),
-                            1, input.size, input.images.isEmpty() ? "generations" : "edits", null);
-                    billingStatus = "CHARGED"; job.setBillingUsageLogId(usage); job.setBillingSettledAt(ImageTime.now());
+                            1, input.size, null);
+                    mediaBilling.charged(job.getId(), usage); billingStatus = "CHARGED";
                 } else {
-                    billing.release(job.getId(), reservation.apiKeyId(), reservation.userId(), reservation.amountUsd()); billingStatus = "RELEASED";
+                    String result = billing.release(job.getId(), reservation.apiKeyId(), reservation.userId(), reservation.amountUsd());
+                    // 释放接口可能返回 "settled"（上游已实际结算），此时按已计费处理
+                    if ("settled".equals(result)) {
+                        mediaBilling.charged(job.getId(), result); billingStatus = "CHARGED";
+                    } else {
+                        mediaBilling.released(job.getId()); billingStatus = "RELEASED";
+                    }
                 }
             }
-        } catch (Exception billingFailure) { billingStatus = chargeOnFailure ? "CHARGE_FAILED" : "RELEASE_FAILED"; job.setBillingError(message(billingFailure)); }
-        job.setStatus("FAILED"); job.setUpstreamStatus("create_failed"); job.setErrorMessage(message(failure)); job.setBillingStatus(billingStatus);
+        } catch (Exception billingFailure) {
+            billingStatus = chargeOnFailure ? "CHARGE_FAILED" : "RELEASE_FAILED";
+            mediaBilling.failed(job.getId(), billingStatus, message(billingFailure));
+        }
+        if (reservation == null) {
+            mediaBilling.failed(job.getId(), "FAILED", message(failure));
+        }
+        setTaskData(job, "upstreamStatus", "create_failed");
+        job.setStatus("FAILED"); job.setErrorMessage(message(failure)); job.setBillingStatus(billingStatus);
         job.setCompletedAt(ImageTime.now()); job.setUpdatedAt(ImageTime.now()); jobs.updateById(job);
     }
 
-    private GenerationJob newJob(ApiProfile profile, Input input, Map<String, Object> raw, String requestId, int index, int total, int count) {
-        GenerationJob job = new GenerationJob();
+    // 构建并初始化一条 PENDING 状态的图片任务记录（含参数快照与客户端请求审计）
+    private MediaTask newJob(ApiProfile profile, Input input, Map<String, Object> raw, String requestId, int index, int total, int count) {
+        MediaTask job = new MediaTask();
         job.setModelConfigId(input.runtime.model().getId());
-        job.setId(id()); job.setProfileId(profile.getId()); job.setPrompt(input.prompt); job.setNegativePrompt(input.negativePrompt);
-        job.setModel(input.model); job.setSize(input.size); job.setQuality(input.quality); job.setStyle(input.style); job.setCount(count);
-        job.setResponseFormat(input.responseFormat); job.setStatus("PENDING"); job.setProgress(0); job.setPollErrorCount(0);
-        Map<String, Object> params = new LinkedHashMap<>(input.requestParams); params.put("request_id", requestId);
-        params.put("request_index", index); params.put("request_total", total); params.put("response_format", input.responseFormat);
-        params.put("output_format", input.outputFormat); params.put("reference_image_count", input.referenceCount()); params.put("has_mask", input.hasMask());
-        job.setParams(stringify(params)); job.setRawRequest(GenerationAuditJson.request(auditClient(raw, input))); job.setRawResponses("[]");
-        job.setCreatedAt(ImageTime.now()); job.setUpdatedAt(ImageTime.now()); return job;
+        job.setId(id()); job.setApiKey(profile.getEncryptedKey()); job.setTaskType("IMAGE"); job.setRequestId(requestId);
+        Map<String, Object> params = new LinkedHashMap<>(input.requestParams);
+        params.put("request_id", requestId); params.put("request_index", index); params.put("request_total", total);
+        params.put("reference_image_count", input.referenceCount());
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("prompt", input.prompt); data.put("negativePrompt", null); data.put("model", input.model);
+        data.put("size", input.size); data.put("quality", input.quality); data.put("style", null); data.put("count", count);
+        data.put("responseFormat", "url"); data.put("outputFormat", null); data.put("params", params);
+        data.put("requestIndex", index); data.put("requestTotal", total); data.put("referenceImageCount", input.referenceCount());
+        data.put("hasMask", false); data.put("images", input.imageUrls);
+        job.setTaskData(MediaTaskData.write(json, data));
+        job.setUserRequest(GenerationAuditJson.stringify(auditClient(raw, input))); job.setSystemResponse("{}");
+        job.setUpstreamRequest("{}"); job.setUpstreamResponse("{}"); job.setStatus("PENDING"); job.setProgress(0);
+        job.setBillingStatus(null); job.setCreatedAt(ImageTime.now()); job.setUpdatedAt(ImageTime.now());
+        return job;
     }
 
+    // 校验并规整请求：数量上限、参考图格式/大小、蒙版规则（PNG 且尺寸与首图一致），再按模型 schema 合并参数
     private Input parse(ImageGenerateRequest request, List<ImageGateway.Upload> uploaded, ImageGateway.Upload uploadedMask,
                         ImageModelConfigService.RuntimeModel runtime) {
         String prompt = text(request.getPrompt()); String model = runtime.model().getModelKey();
         int count = number(request.getCount(), 1);
-        if (prompt == null || count < 1 || count > runtime.model().getMaxCount()) throw new ImageApiException(422, "Invalid request.");
-        if (request.hasJsonImageInputs())
-            throw new ImageApiException(422, "Image inputs must use multipart upload.");
+        if (prompt == null || !Boolean.TRUE.equals(request.getAsync()) || count < 1 || count > runtime.model().getMaxCount())
+            throw new ImageApiException(422, "Invalid request.");
+        validateModelParameters(model, request);
         List<ImageGateway.Upload> images = new ArrayList<>(uploaded);
-        ImageGateway.Upload mask = uploadedMask;
-        List<String> imageUrls = request.getReferenceImageUrls() == null ? List.of() : request.getReferenceImageUrls().stream()
+        if (uploadedMask != null) throw new ImageApiException(422, "Invalid request.");
+        List<String> submittedImageUrls = request.getImages();
+        List<String> imageUrls = submittedImageUrls == null ? List.of() : submittedImageUrls.stream()
                 .filter(url -> url != null && !url.isBlank()).toList();
-        String maskUrl = text(request.getMaskUrl());
-        if (images.size() + imageUrls.size() > runtime.model().getMaxReferenceImages()
-                || images.stream().anyMatch(file -> file.bytes().length > 10 * 1024 * 1024 || !validImage(file.bytes())))
+        if (!images.isEmpty() || images.size() + imageUrls.size() > runtime.model().getMaxReferenceImages())
             throw new ImageApiException(422, "Unsupported or invalid image.");
-        if (mask != null && (!Integer.valueOf(1).equals(runtime.model().getSupportsMask()) || images.isEmpty()
-                || !"image/png".equals(mask.mimeType()) || !isPng(mask.bytes())))
-            throw new ImageApiException(422, "A mask requires a reference image and must be PNG.");
-        if (mask != null && !sameDimensions(images.get(0), mask)) throw new ImageApiException(422, "Mask dimensions must match the first reference image.");
-        if (maskUrl != null && (!Integer.valueOf(1).equals(runtime.model().getSupportsMask()) || imageUrls.isEmpty()))
-            throw new ImageApiException(422, "A mask requires a reference image.");
-        Map<String, Object> supplied = requestFormatters.format(model, request);
-        if (!imageUrls.isEmpty()) supplied.put(imageUrls.size() == 1 ? "image" : "image[]", imageUrls.size() == 1 ? imageUrls.get(0) : imageUrls);
-        if (maskUrl != null) supplied.put("mask", maskUrl);
-        Map<String, Object> requestParams = ImageModelRules.merge(runtime.model().getParameterSchema(), runtime.model().getDefaultParams(), supplied);
+        int referenceCount = images.size() + imageUrls.size();
+        ImageGenerateRequest upstream = new ImageGenerateRequest();
+        upstream.setModel(model);
+        upstream.setPrompt(prompt);
+        upstream.setAsync(request.getAsync());
+        upstream.setCount(request.getCount());
+        upstream.setSize(text(request.getSize()));
+        upstream.setAspectRatio(text(request.getAspectRatio()));
+        upstream.setQuality(text(request.getQuality()));
+        upstream.setImages(imageUrls);
+        Map<String, Object> requestParams = requestFormatters.format(model, upstream);
         GenerationAuditJson.rejectBase64(requestParams);
-        String size = value(requestParams.get("size"), "auto");
-        String responseFormat = value(requestParams.get("response_format"), "url");
-        String outputFormat = text(requestParams.get("output_format"));
-        return new Input(prompt, text(request.getNegativePrompt()), model, size, text(requestParams.get("quality")),
-                text(request.getStyle()), count, responseFormat, outputFormat, requestParams, images, imageUrls, mask, maskUrl, runtime);
+        String size = value(requestParams.get("size"), value(requestParams.get("aspect_ratio"), "auto"));
+        return new Input(prompt, model, size, text(requestParams.get("quality")), count, requestParams, images, imageUrls, referenceCount, runtime);
     }
 
-    private boolean sameDimensions(ImageGateway.Upload a, ImageGateway.Upload b) {
-        try { var one = ImageIO.read(new ByteArrayInputStream(a.bytes())); var two = ImageIO.read(new ByteArrayInputStream(b.bytes()));
-            return one != null && two != null && one.getWidth() == two.getWidth() && one.getHeight() == two.getHeight(); }
-        catch (Exception e) { return false; }
+    private void validateModelParameters(String model, ImageGenerateRequest request) {
+        String size = text(request.getSize());
+        String aspectRatio = text(request.getAspectRatio());
+        if ("gpt-image-2".equals(model) && size == null) throw new ImageApiException(422, "Invalid request.");
+        if (Set.of("gpt-image-2-1k", "gpt-image-2-2k", "gpt-image-2-4k").contains(model)
+                && size == null && aspectRatio == null) throw new ImageApiException(422, "Invalid request.");
     }
-    private boolean validImage(byte[] bytes) {
-        if (isPng(bytes)) return true;
-        if (bytes.length >= 3 && bytes[0] == (byte) 0xff && bytes[1] == (byte) 0xd8 && bytes[2] == (byte) 0xff) return true;
-        if (bytes.length >= 6 && bytes[0] == 'G' && bytes[1] == 'I' && bytes[2] == 'F') return true;
-        return bytes.length >= 12 && bytes[0] == 'R' && bytes[1] == 'I' && bytes[2] == 'F' && bytes[3] == 'F'
-                && bytes[8] == 'W' && bytes[9] == 'E' && bytes[10] == 'B' && bytes[11] == 'P';
-    }
-    private boolean isPng(byte[] bytes) {
-        return bytes.length >= 8 && bytes[0] == (byte) 0x89 && bytes[1] == 'P' && bytes[2] == 'N' && bytes[3] == 'G';
-    }
-    private String prompt(Input input) { return input.negativePrompt == null ? input.prompt : input.prompt + "\n\nNegative prompt: " + input.negativePrompt; }
     private String stringify(Object value) { try { return json.writeValueAsString(value); } catch (Exception e) { throw new ImageApiException(422, "Invalid request."); } }
+    private void setTaskData(MediaTask task, String key, Object value) {
+        Map<String, Object> data = MediaTaskData.read(json, task.getTaskData());
+        MediaTaskData.put(data, key, value);
+        task.setTaskData(MediaTaskData.write(json, data));
+    }
+    // 构建客户端请求审计快照：文件仅记录名称/类型/大小，不落库二进制内容
     private Map<String, Object> auditClient(Map<String, Object> raw, Input input) {
         Map<String, Object> value = new LinkedHashMap<>(raw);
         if (!input.images.isEmpty()) value.put("uploadedImages", input.images.stream().map(ImageGenerationService::file).toList());
-        if (!input.imageUrls.isEmpty()) value.put("referenceImageUrls", input.imageUrls);
-        if (input.mask != null) value.put("uploadedMask", file(input.mask));
-        if (input.maskUrl != null) value.put("maskUrl", input.maskUrl);
+        if (!input.imageUrls.isEmpty()) value.put("images", input.imageUrls);
         return value;
     }
     private Map<String, Object> auditUpstream(Map<String, Object> body, Input input) {
         Map<String, Object> value = new LinkedHashMap<>(body);
         if (!input.images.isEmpty()) {
-            String field = input.images.size() == 1 ? "image" : "image[]";
-            Object files = input.images.size() == 1 ? file(input.images.get(0)) : input.images.stream().map(ImageGenerationService::file).toList();
-            value.put(field, files);
+            value.put("images", input.images.stream().map(ImageGenerationService::file).toList());
         }
-        if (input.mask != null) value.put("mask", file(input.mask));
         return value;
+    }
+    private Map<String, Object> upstreamBody(Input input) {
+        Map<String, Object> body = new LinkedHashMap<>(input.requestParams);
+        body.put("n", 1);
+        return body;
     }
     private static Map<String, Object> file(ImageGateway.Upload value) {
         return Map.of("name", value.name(), "mimeType", value.mimeType(), "sizeBytes", value.bytes().length);
@@ -206,13 +244,11 @@ public class ImageGenerationService {
     private static String id() { return UUID.randomUUID().toString().replace("-", ""); }
     private static String message(Exception e) { return e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(); }
 
-    private record Input(String prompt, String negativePrompt, String model, String size, String quality, String style, int count,
-                         String responseFormat, String outputFormat, Map<String, Object> requestParams,
-                         List<ImageGateway.Upload> images, List<String> imageUrls, ImageGateway.Upload mask, String maskUrl,
+    private record Input(String prompt, String model, String size, String quality, int count,
+                         Map<String, Object> requestParams, List<ImageGateway.Upload> images, List<String> imageUrls, int referenceCount,
                          ImageModelConfigService.RuntimeModel runtime) {
-        boolean hasReferenceInputs() { return !images.isEmpty() || !imageUrls.isEmpty() || mask != null || maskUrl != null; }
-        boolean hasMask() { return mask != null || maskUrl != null; }
-        int referenceCount() { return images.size() + imageUrls.size(); }
+        boolean hasReferenceInputs() { return !images.isEmpty() || !imageUrls.isEmpty(); }
     }
+    /** 请求受理结果：批次 requestId 及创建的任务数量。 */
     public record Accepted(String requestId, int count) {}
 }

@@ -48,9 +48,9 @@ WITH provider AS (
     ON CONFLICT(name) DO UPDATE SET base_url = EXCLUDED.base_url, update_time = CURRENT_TIMESTAMP
     RETURNING id
 )
-INSERT INTO ai_models(provider_id, model_type, model_key, display_name, upstream_model, generation_path, edit_path,
+INSERT INTO ai_models(provider_id, model_type, model_key, display_name, upstream_model, generation_path,
                       async_mode, max_count, max_reference_images, supports_mask, parameter_schema, default_params, model_sort)
-SELECT provider.id, 'IMAGE', model_key, display_name, upstream_model, '/v1/images/generations', '/v1/images/edits',
+SELECT provider.id, 'IMAGE', model_key, display_name, upstream_model, '/v1/images/generations',
        1, max_count, max_refs, supports_mask, parameter_schema::jsonb, default_params::jsonb, model_sort
 FROM provider
 CROSS JOIN (VALUES

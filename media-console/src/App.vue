@@ -43,6 +43,7 @@ const autoBindTimer = ref<number | undefined>();
 const referenceImages = ref<ReferenceImage[]>([]);
 const maskImage = ref<ReferenceImage | null>(null);
 const isReferenceDragging = ref(false);
+const isReferenceImporting = ref(false);
 const showApiKey = ref(false);
 const docDialogOpen = ref(false);
 const activeDocTab = ref<"gpt-image-2" | "gpt-image-2-4k">("gpt-image-2");
@@ -225,6 +226,11 @@ function downloadName(image: GeneratedImage) {
   return `tcboys.de_${createSnowflakeId()}.${ext}`;
 }
 
+function apiKeyHeaders(): Record<string, string> {
+  const apiKey = localStorage.getItem("apiKey") ?? "";
+  return apiKey ? { "X-API-Key": apiKey } : {};
+}
+
 function applyTheme() {
   document.documentElement.dataset.theme = theme;
   localStorage.setItem("theme", theme);
@@ -357,8 +363,12 @@ function fileToReferenceImage(file: File): Promise<ReferenceImage> {
   });
 }
 
-async function urlToReferenceImage(url: string, name: string, fallbackMimeType?: string): Promise<ReferenceImage> {
-  const response = await fetch(url);
+async function urlToReferenceImage(url: string, name: string, fallbackMimeType?: string, imageId?: string): Promise<ReferenceImage> {
+  const downloadUrl = imageId ? `/api/images/${encodeURIComponent(imageId)}/download` : url;
+  const response = await fetch(downloadUrl, imageId ? {
+    credentials: "include",
+    headers: apiKeyHeaders()
+  } : undefined);
   if (!response.ok) throw new Error("图片读取失败");
 
   const blob = await response.blob();
@@ -392,6 +402,7 @@ function dragHistoryImage(event: DragEvent, job: GenerationJob) {
 
   event.dataTransfer.effectAllowed = "copy";
   event.dataTransfer.setData("application/x-tcboys-reference-image", JSON.stringify({
+    id: image.id,
     url: image.publicUrl,
     name: `${job.prompt || "reference"}.${image.mimeType.split("/")[1]?.split(";")[0] || "png"}`,
     mimeType: image.mimeType
@@ -424,36 +435,41 @@ async function handleReferenceDrop(event: DragEvent) {
   isReferenceDragging.value = false;
   if (!event.dataTransfer || referenceImages.value.length >= referenceLimit.value) return;
 
-  const droppedFiles = Array.from(event.dataTransfer.files ?? [])
-    .filter((file) => file.type.startsWith("image/") && file.size <= maxReferenceImageBytes);
-  if (droppedFiles.length) {
-    const remaining = Math.max(0, referenceLimit.value - referenceImages.value.length);
-    const selected = droppedFiles.slice(0, remaining);
-    const images = await Promise.all(selected.map(fileToReferenceImage));
-    addReferenceImages(images);
-    return;
-  }
-
-  const raw = event.dataTransfer.getData("application/x-tcboys-reference-image");
-  const uri = event.dataTransfer.getData("text/uri-list").split("\n").find((line) => line && !line.startsWith("#"));
-  let payload: { url: string; name?: string; mimeType?: string } | null = null;
-
-  if (raw) {
-    try {
-      payload = JSON.parse(raw);
-    } catch {
-      payload = null;
-    }
-  }
-
-  const url = payload?.url || uri;
-  if (!url) return;
-
+  isReferenceImporting.value = true;
   try {
-    const image = await urlToReferenceImage(url, payload?.name || "reference.png", payload?.mimeType);
-    addReferenceImages([image]);
-  } catch (error) {
-    store.error = error instanceof Error ? error.message : "参考图添加失败";
+    const droppedFiles = Array.from(event.dataTransfer.files ?? [])
+      .filter((file) => file.type.startsWith("image/") && file.size <= maxReferenceImageBytes);
+    if (droppedFiles.length) {
+      const remaining = Math.max(0, referenceLimit.value - referenceImages.value.length);
+      const selected = droppedFiles.slice(0, remaining);
+      const images = await Promise.all(selected.map(fileToReferenceImage));
+      addReferenceImages(images);
+      return;
+    }
+
+    const raw = event.dataTransfer.getData("application/x-tcboys-reference-image");
+    const uri = event.dataTransfer.getData("text/uri-list").split("\n").find((line) => line && !line.startsWith("#"));
+    let payload: { id?: string; url: string; name?: string; mimeType?: string } | null = null;
+
+    if (raw) {
+      try {
+        payload = JSON.parse(raw);
+      } catch {
+        payload = null;
+      }
+    }
+
+    const url = payload?.url || uri;
+    if (!url) return;
+
+    try {
+      const image = await urlToReferenceImage(url, payload?.name || "reference.png", payload?.mimeType, payload?.id);
+      addReferenceImages([image]);
+    } catch (error) {
+      store.error = error instanceof Error ? error.message : "参考图添加失败";
+    }
+  } finally {
+    isReferenceImporting.value = false;
   }
 }
 
@@ -508,6 +524,28 @@ function closeNotice() {
   noticeDialog.open = false;
 }
 
+function textParameter(key: string) {
+  const value = modelParameters[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function generationPayloadFields() {
+  const value: { size?: string; aspect_ratio?: string; quality?: string } = {};
+  const size = textParameter("size");
+  const aspectRatio = textParameter("aspect_ratio");
+  const quality = textParameter("quality");
+
+  if (form.model === "gpt-image-2") {
+    if (size) value.size = size;
+    return value;
+  }
+
+  if (size) value.size = size;
+  if (aspectRatio) value.aspect_ratio = aspectRatio;
+  if (quality) value.quality = quality;
+  return value;
+}
+
 async function generate() {
   if (!connection.apiKey.trim()) {
     showNotice("缺少 API Key", "请先填写 API Key 后再生成图片。");
@@ -535,19 +573,23 @@ async function generate() {
   if (!model) { store.error = "没有可用的图片模型"; return; }
   form.count = Math.max(1, Math.min(model.maxCount, Number(form.count) || 1));
 
+  const payloadFields = generationPayloadFields();
+  if (form.model === "gpt-image-2" && !payloadFields.size) {
+    store.error = "size is required.";
+    return;
+  }
+  if (form.model !== "gpt-image-2" && !payloadFields.size && !payloadFields.aspect_ratio) {
+    store.error = "size or aspect_ratio is required.";
+    return;
+  }
+
   await store.generate({
     prompt: form.prompt,
     model: form.model,
-    size: typeof modelParameters.size === "string" ? modelParameters.size : "auto",
+    async: true,
     count: form.count,
-    quality: typeof modelParameters.quality === "string" ? modelParameters.quality : undefined,
-    responseFormat: "url",
-    extraParams: {},
-    parameters: { ...modelParameters },
-    referenceImages: referenceImages.value.map(({ name, mimeType, file }) => ({ name, mimeType, file })),
-    mask: model.supportsMask && maskImage.value
-      ? { name: maskImage.value.name, mimeType: "image/png", file: maskImage.value.file }
-      : undefined
+    ...payloadFields,
+    referenceImages: referenceImages.value.map(({ name, mimeType, file }) => ({ name, mimeType, file }))
   });
 }
 
@@ -561,21 +603,57 @@ function reuseJob(job: GenerationJob) {
   }
 }
 
-function downloadAll() {
-  latestImages.value.filter((item) => !isPendingPreview(item) && !isFailedPreview(item)).forEach((item) => {
+async function saveImageFile(image: GeneratedImage) {
+  const filename = downloadName(image);
+  const downloadUrl = `/api/images/${encodeURIComponent(image.id)}/download`;
+  try {
+    const response = await fetch(downloadUrl, {
+      credentials: "include",
+      headers: apiKeyHeaders()
+    });
+    if (!response.ok) throw new Error("download failed");
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
-    anchor.href = item.publicUrl;
-    anchor.download = downloadName(item);
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
     anchor.click();
-  });
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch {
+    try {
+      const response = await fetch(image.publicUrl, { mode: "cors" });
+      if (!response.ok) throw new Error("download failed");
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      return;
+    } catch {
+      // Fall through to opening the original image URL when both download paths fail.
+    }
+    window.open(image.publicUrl, "_blank", "noopener,noreferrer");
+    store.error = "图片下载失败，已在新窗口打开图片，请手动保存。";
+  }
+}
+
+function downloadAll() {
+  latestImages.value
+    .filter((item) => !isPendingPreview(item) && !isFailedPreview(item))
+    .forEach((item, index) => {
+      window.setTimeout(() => { void saveImageFile(item); }, index * 120);
+    });
 }
 
 function downloadJobImages(job: GenerationJob) {
-  (job.images ?? []).forEach((image) => {
-    const anchor = document.createElement("a");
-    anchor.href = image.publicUrl;
-    anchor.download = downloadName(image);
-    anchor.click();
+  (job.images ?? []).forEach((image, index) => {
+    window.setTimeout(() => { void saveImageFile(image); }, index * 120);
   });
 }
 
@@ -645,24 +723,7 @@ function movePreview(step: number) {
 
 function downloadImage(image: GeneratedImage) {
   if (image.id.startsWith("pending-")) return;
-
-  const anchor = document.createElement("a");
-  anchor.href = image.publicUrl;
-  anchor.download = downloadName(image);
-  anchor.click();
-}
-
-async function deletePreviewImage() {
-  const image = previewImage.value;
-  if (!image) return;
-
-  const nextImage = previewImages.value[previewIndex.value + 1] ?? previewImages.value[previewIndex.value - 1] ?? null;
-  if (image.id.startsWith("pending-")) {
-    await store.deleteJob(image.jobId);
-  } else {
-    await store.deleteImage(image.id);
-  }
-  previewImageId.value = nextImage?.id ?? null;
+  void saveImageFile(image);
 }
 
 async function copyText(text: string) {
@@ -782,10 +843,6 @@ async function copyText(text: string) {
                   <ArrowDownToLine :size="15" />
                   下载
                 </button>
-                <button class="danger-text" type="button" title="删除图片" @click="item.id.startsWith('pending-') ? store.deleteJob(item.jobId) : store.deleteImage(item.id)">
-                  <Trash2 :size="15" />
-                  删除
-                </button>
               </div>
             </figcaption>
           </figure>
@@ -798,11 +855,19 @@ async function copyText(text: string) {
         </div>
 
         <div
-          :class="['prompt-panel', { 'is-reference-dragging': isReferenceDragging }]"
+          :class="['prompt-panel', { 'is-reference-dragging': isReferenceDragging, 'is-reference-importing': isReferenceImporting }]"
           @dragover="handleReferenceDragOver"
           @dragleave="handleReferenceDragLeave"
           @drop="handleReferenceDrop"
         >
+          <div v-if="isReferenceImporting" class="reference-import-overlay" role="status" aria-live="polite">
+            <div class="reference-import-card">
+              <Loader2 class="spin" :size="24" />
+              <strong>正在导入参考图</strong>
+              <span>图片读取中</span>
+            </div>
+          </div>
+
           <div class="reference-bar">
             <div class="reference-upload-row">
               <label class="upload-button">
@@ -876,11 +941,14 @@ async function copyText(text: string) {
 
         <section class="list">
           <article v-for="job in pagedHistoryJobs" :key="job.id" class="list-item">
-            <button
+            <div
               class="history-thumb-button"
-              type="button"
               :title="job.status === 'FAILED' ? failedReasonTitle(job) : '查看批次'"
+              role="button"
+              tabindex="0"
               @click="openHistoryPreview(job)"
+              @keydown.enter.prevent="openHistoryPreview(job)"
+              @keydown.space.prevent="openHistoryPreview(job)"
             >
               <span v-if="job.status === 'PENDING' && !job.images?.length" class="generation-loader history-thumb-loading" aria-label="图片生成中">
                 <span class="generation-loader-grid"></span>
@@ -906,7 +974,7 @@ async function copyText(text: string) {
                 @error="useUnavailableImage"
               />
               <span v-else class="history-thumb-placeholder">无图</span>
-            </button>
+            </div>
             <div class="history-meta">
               <strong class="history-prompt" :title="job.prompt">{{ job.prompt }}</strong>
               <p>耗时：{{ durationLabel(job) }}</p>
@@ -964,10 +1032,6 @@ async function copyText(text: string) {
             <ArrowDownToLine :size="15" />
             下载
           </button>
-          <button class="danger-text" type="button" title="删除图片" @click="deletePreviewImage">
-            <Trash2 :size="15" />
-            删除
-          </button>
         </div>
       </div>
     </div>
@@ -1022,38 +1086,35 @@ async function copyText(text: string) {
 
         <div class="doc-body">
           <section v-if="activeDocTab === 'gpt-image-2'" class="doc-section">
-            <p><strong>GPT-Image-2：</strong>size 请传画幅比例（如 1:1）。文生图 JSON POST /images/generations（async: true，stream: false）；带参考图/多图叠图/蒙版须 multipart POST /images/edits（image / image[]），JSON generations 传 image URL 无效；GET 轮询取 data.url。</p>
+            <p><strong>GPT-Image-2：</strong>size 请传画幅比例（如 1:1）。文生图和图生图统一 JSON POST /images/generations（async: true），参考图固定通过 images URL 数组提交；GET 轮询取 data.url。</p>
             <p><strong>计费：</strong>按所选模型后台配置的单张价格计费。任务创建前冻结对应额度，生成成功后结算，失败或超时自动释放。</p>
 
             <h3>接口</h3>
             <ul>
-              <li><strong>POST</strong> https://ai.cangyuansuanli.cn/v1/images/generations：文生图（application/json，async 必须为 true）。</li>
-              <li><strong>GET</strong> https://ai.cangyuansuanli.cn/v1/images/generations/{task_id}：查询文生图异步任务。</li>
-              <li><strong>POST</strong> https://ai.cangyuansuanli.cn/v1/images/edits：图生图/编辑（multipart/form-data，async 必须为 true）。参考图须上传文件，JSON 传 image URL 无效。</li>
-              <li><strong>GET</strong> https://ai.cangyuansuanli.cn/v1/images/edits/{task_id}：查询图生图异步任务。</li>
+              <li><strong>POST</strong> https://ai.cangyuansuanli.cn/v1/images/generations：文生图/图生图统一入口（application/json，async 必须为 true）。</li>
+              <li><strong>GET</strong> https://ai.cangyuansuanli.cn/v1/images/generations/{task_id}：查询图片异步任务。</li>
               <li><strong>GET</strong> https://ai.cangyuansuanli.cn/v1/images/{task_id}/content：下载图片（部分模型）。</li>
             </ul>
 
             <h3>请求字段</h3>
             <ul>
               <li><strong>model：</strong>必填，固定传模型广场展示名 cy-img1-gpt-image-2。</li>
-              <li><strong>prompt：</strong>必填，图像描述提示词；edits 时可在 prompt 中用 @图片1 等引用参考图。</li>
+              <li><strong>prompt：</strong>必填，图像描述提示词；可在 prompt 中用 @图片1 等引用参考图。</li>
               <li><strong>async：</strong>异步模式必填 true。</li>
               <li><strong>size：</strong>画幅比例（推荐），如 1:1、3:2、2:3；兼容传像素但不保证输出像素一致。1:1 @ 1K 实际约 1254x1254。</li>
               <li><strong>n：</strong>生成张数，1-10，默认 1。</li>
-              <li><strong>stream：</strong>建议 false（非 SSE JSON 响应）；edits 异步同样建议 false。</li>
-              <li><strong>image / image[]：</strong>edits 端点 multipart 参考图字段，最多 10 张。</li>
-              <li><strong>mask：</strong>edits 端点可选蒙版 PNG，透明区域为编辑区，尺寸须与首图一致。</li>
+              <li><strong>stream：</strong>建议 false（非 SSE JSON 响应）。</li>
+              <li><strong>images：</strong>参考图 URL 数组，文生图传空数组，图生图最多 10 张。</li>
             </ul>
 
             <h3>请求 JSON</h3>
             <pre><code>{
   "async": true,
   "model": "cy-img1-gpt-image-2",
-  "n": 1,
+  "count": 1,
+  "images": [],
   "prompt": "一只橘猫坐在窗台上，午后阳光",
-  "size": "1:1",
-  "stream": false
+  "size": "1:1"
 }</code></pre>
 
             <h3>返回示例</h3>
@@ -1099,9 +1160,10 @@ async function copyText(text: string) {
             <pre><code>{
   "model": "gpt-image-2-4k",
   "prompt": "图片描述",
-  "n": 1,
-  "size": "3840x2160",
-  "response_format": "url"
+  "async": true,
+  "count": 1,
+  "images": [],
+  "size": "3840x2160"
 }</code></pre>
           </section>
         </div>

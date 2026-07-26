@@ -24,7 +24,6 @@ public class SaTokenConfig implements WebMvcConfigurer {
                         "/api/videos/**",
                         "/api/video-jobs/**",
                         "/api/jobs/**",
-                        "/api/templates/**",
                         "/img/**",
                         "/uploads/**"
                 );

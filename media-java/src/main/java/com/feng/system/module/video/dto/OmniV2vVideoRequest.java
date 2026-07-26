@@ -14,10 +14,14 @@ import java.util.List;
 @Getter
 @Setter
 @EqualsAndHashCode(callSuper = true)
+/**
+ * omni-v2v(视频生视频)模型的生成请求:支持参考视频 URL 列表,不支持参考音频与音频生成。
+ */
 @JsonDeserialize(using = JsonDeserializer.None.class)
 public class OmniV2vVideoRequest extends VideoGenerationRequest {
     private List<String> referenceVideoUrls;
 
+    /** 构建生成输入:omni-v2v 不支持音频生成,显式传 generateAudio=true 直接拒绝。 */
     @Override
     protected VideoGenerationInput buildInput(ImageModelConfigService.RuntimeModel runtime,
             List<ImageGateway.Upload> images, ImageGateway.Upload firstFrame, ImageGateway.Upload lastFrame) {

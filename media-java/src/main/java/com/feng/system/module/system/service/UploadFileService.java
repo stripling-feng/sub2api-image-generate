@@ -13,5 +13,7 @@ public interface UploadFileService {
 
     UploadFileVO upload(MultipartFile file);
 
+    UploadFileVO upload(MultipartFile file, String directory);
+
     ResponseEntity<Resource> getContent(Long id, boolean download);
 }

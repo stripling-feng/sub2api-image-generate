@@ -11,23 +11,32 @@ import com.feng.system.common.api.PageResult;
 import com.feng.system.common.exception.BusinessException;
 import com.feng.system.module.image.entity.AiModel;
 import com.feng.system.module.image.entity.ModelProvider;
-import com.feng.system.module.image.entity.GenerationJob;
 import com.feng.system.module.image.mapper.AiModelMapper;
 import com.feng.system.module.image.mapper.ModelProviderMapper;
-import com.feng.system.module.image.mapper.GenerationJobMapper;
+import com.feng.system.module.media.entity.MediaTask;
+import com.feng.system.module.media.mapper.MediaTaskMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
 
+/**
+ * 模型配置服务：管理图片/视频模型及其服务商的增删改查，
+ * 对外提供启用中模型的公开列表，并在生成链路中校验加载可用的模型与服务商配置。
+ */
 @Service
 @RequiredArgsConstructor
 public class ImageModelConfigService {
     private final ModelProviderMapper providers;
     private final AiModelMapper models;
-    private final GenerationJobMapper jobs;
+    private final MediaTaskMapper tasks;
     private final ObjectMapper json;
 
+    /**
+     * 分页查询服务商列表。
+     *
+     * @param name 名称模糊搜索关键字，可为空
+     */
     public PageResult<ModelProvider> providerPage(String name, long pageNum, long pageSize) {
         Page<ModelProvider> page = providers.selectPage(new Page<>(pageNum, pageSize), new LambdaQueryWrapper<ModelProvider>()
                 .eq(ModelProvider::getDeleted, 0)
@@ -36,29 +45,46 @@ public class ImageModelConfigService {
         return PageResult.of(page.getTotal(), page.getCurrent(), page.getSize(), page.getRecords());
     }
 
+    /**
+     * 查询全部未删除的服务商，供下拉选择使用。
+     */
     public List<ModelProvider> providerOptions() {
         return providers.selectList(new LambdaQueryWrapper<ModelProvider>().eq(ModelProvider::getDeleted, 0)
                 .orderByAsc(ModelProvider::getProviderSort).orderByAsc(ModelProvider::getId));
     }
 
+    /**
+     * 新增服务商（校验名称与公网 HTTPS 地址后落库）。
+     */
     public void saveProvider(ModelProvider provider) {
         validateProvider(provider);
         provider.setId(null);
         providers.insert(provider);
     }
 
+    /**
+     * 更新指定服务商。
+     */
     public void updateProvider(Long id, ModelProvider provider) {
         validateProvider(provider);
         provider.setId(id);
         providers.updateById(provider);
     }
 
+    /**
+     * 删除服务商；仍有关联模型时拒绝删除。
+     */
     public void deleteProvider(Long id) {
         if (models.selectCount(new LambdaQueryWrapper<AiModel>().eq(AiModel::getProviderId, id).eq(AiModel::getDeleted, 0)) > 0)
             throw new BusinessException("该服务商仍有关联模型，不能删除");
         providers.deleteById(id);
     }
 
+    /**
+     * 分页查询图片模型列表。
+     *
+     * @param name 按模型 key 或显示名模糊搜索，可为空
+     */
     public PageResult<AiModel> imagePage(String name, long pageNum, long pageSize) {
         Page<AiModel> page = models.selectPage(new Page<>(pageNum, pageSize), new LambdaQueryWrapper<AiModel>()
                 .eq(AiModel::getDeleted, 0).eq(AiModel::getModelType, "IMAGE")
@@ -67,6 +93,9 @@ public class ImageModelConfigService {
         return PageResult.of(page.getTotal(), page.getCurrent(), page.getSize(), page.getRecords());
     }
 
+    /**
+     * 新增图片模型：参数 schema、默认参数等内部字段统一由系统默认值填充，不接受外部传入。
+     */
     public void saveImage(AiModel model) {
         applyInternalDefaults(model);
         validateModel(model);
@@ -75,9 +104,13 @@ public class ImageModelConfigService {
         models.insert(model);
     }
 
+    /**
+     * 更新图片模型；schema、默认参数、数量上限等内部字段保持原值，防止被前端覆盖。
+     */
     public void updateImage(Long id, AiModel model) {
         AiModel existing = models.selectById(id);
         if (existing == null || !"IMAGE".equals(existing.getModelType())) throw new BusinessException("图片模型不存在");
+        // 内部受控字段以库中现有值为准
         model.setParameterSchema(existing.getParameterSchema());
         model.setDefaultParams(existing.getDefaultParams());
         model.setMaxCount(existing.getMaxCount());
@@ -88,13 +121,21 @@ public class ImageModelConfigService {
         models.updateById(model);
     }
 
+    /**
+     * 删除图片模型；仍有进行中（PENDING）任务时拒绝删除。
+     */
     public void deleteImage(Long id) {
-        if (jobs.selectCount(new LambdaQueryWrapper<GenerationJob>()
-                .eq(GenerationJob::getModelConfigId, id).eq(GenerationJob::getStatus, "PENDING")) > 0)
+        if (tasks.selectCount(new LambdaQueryWrapper<MediaTask>()
+                .eq(MediaTask::getModelConfigId, id).eq(MediaTask::getStatus, "PENDING")) > 0)
             throw new BusinessException("该模型仍有进行中的任务，不能删除");
         models.deleteById(id);
     }
 
+    /**
+     * 分页查询视频模型列表。
+     *
+     * @param name 按模型 key 或显示名模糊搜索，可为空
+     */
     public PageResult<AiModel> videoPage(String name, long pageNum, long pageSize) {
         Page<AiModel> page = models.selectPage(new Page<>(pageNum, pageSize), new LambdaQueryWrapper<AiModel>()
                 .eq(AiModel::getDeleted, 0).eq(AiModel::getModelType, "VIDEO")
@@ -103,6 +144,9 @@ public class ImageModelConfigService {
         return PageResult.of(page.getTotal(), page.getCurrent(), page.getSize(), page.getRecords());
     }
 
+    /**
+     * 新增视频模型：根据模型 key 套用内置模板（seedance/grok/omni 等）生成参数配置。
+     */
     public void saveVideo(AiModel model) {
         applyVideoTemplate(model);
         validateModel(model);
@@ -111,9 +155,13 @@ public class ImageModelConfigService {
         models.insert(model);
     }
 
+    /**
+     * 更新视频模型；模型 key 及模板派生字段不可修改，保持库中原值。
+     */
     public void updateVideo(Long id, AiModel model) {
         AiModel existing = models.selectById(id);
         if (existing == null || !"VIDEO".equals(existing.getModelType())) throw new BusinessException("视频模型不存在");
+        // 内部受控字段以库中现有值为准
         model.setModelKey(existing.getModelKey());
         model.setParameterSchema(existing.getParameterSchema());
         model.setDefaultParams(existing.getDefaultParams());
@@ -126,16 +174,25 @@ public class ImageModelConfigService {
         models.updateById(model);
     }
 
+    /**
+     * 删除视频模型。
+     */
     public void deleteVideo(Long id) {
         AiModel existing = models.selectById(id);
         if (existing == null || !"VIDEO".equals(existing.getModelType())) throw new BusinessException("视频模型不存在");
         models.deleteById(id);
     }
 
+    /**
+     * 返回对外公开的已启用图片模型列表（含参数 schema 与默认值，不含密钥等敏感信息）。
+     */
     public List<Map<String, Object>> publicImages() {
         return publicModels("IMAGE");
     }
 
+    /**
+     * 返回对外公开的已启用视频模型列表。
+     */
     public List<Map<String, Object>> publicVideos() {
         return publicModels("VIDEO");
     }
@@ -152,6 +209,9 @@ public class ImageModelConfigService {
                 .filter(Objects::nonNull).toList();
     }
 
+    /**
+     * 按模型 key 加载可用的图片模型及其服务商配置；模型未启用或服务商配置不完整时抛出业务异常。
+     */
     public RuntimeModel requireImage(String modelKey) {
         AiModel model = models.selectOne(new LambdaQueryWrapper<AiModel>().eq(AiModel::getModelKey, modelKey)
                 .eq(AiModel::getModelType, "IMAGE").eq(AiModel::getEnabled, 1).eq(AiModel::getDeleted, 0));
@@ -164,6 +224,9 @@ public class ImageModelConfigService {
         return new RuntimeModel(model, provider);
     }
 
+    /**
+     * 按模型配置 ID 加载图片模型运行时配置（用于轮询等已知任务归属的场景，不校验启用状态）。
+     */
     public RuntimeModel requireImage(Long id) {
         AiModel model = models.selectById(id);
         if (model == null || !"IMAGE".equals(model.getModelType())) throw new ImageApiException(503, "Image model configuration is missing.");
@@ -174,6 +237,9 @@ public class ImageModelConfigService {
         return new RuntimeModel(model, provider);
     }
 
+    /**
+     * 按模型 key 加载可用的视频模型及其服务商配置。
+     */
     public RuntimeModel requireVideo(String modelKey) {
         AiModel model = models.selectOne(new LambdaQueryWrapper<AiModel>().eq(AiModel::getModelKey, modelKey)
                 .eq(AiModel::getModelType, "VIDEO").eq(AiModel::getEnabled, 1).eq(AiModel::getDeleted, 0));
@@ -181,6 +247,9 @@ public class ImageModelConfigService {
         return requireVideoModel(model);
     }
 
+    /**
+     * 按模型配置 ID 加载视频模型运行时配置。
+     */
     public RuntimeModel requireVideo(Long id) {
         AiModel model = models.selectById(id);
         if (model == null || !"VIDEO".equals(model.getModelType()))
@@ -241,14 +310,16 @@ public class ImageModelConfigService {
         if (model.getModelSort() == null) model.setModelSort(0);
     }
 
+    // 新建图片模型时强制使用系统内置的 schema/默认参数/上限，屏蔽外部传入值
     private void applyInternalDefaults(AiModel model) {
         model.setParameterSchema("[]");
-        model.setDefaultParams("{\"async\":true,\"stream\":false,\"response_format\":\"url\"}");
+        model.setDefaultParams("{}");
         model.setMaxCount(10);
         model.setMaxReferenceImages(9);
         model.setBillingMode("PER_REQUEST");
     }
 
+    // 按模型 key 匹配内置视频模板：设置生成路径、参考素材上限、参数 schema 与协议默认值；未匹配到模板则拒绝创建
     private void applyVideoTemplate(AiModel model) {
         model.setMaxCount(4);
         model.setSupportsMask(0);
@@ -312,5 +383,6 @@ public class ImageModelConfigService {
         try { return json.readValue(value, type); } catch (Exception e) { throw new IllegalStateException(e); }
     }
 
+    /** 生成链路使用的运行时配置：模型定义及其所属服务商。 */
     public record RuntimeModel(AiModel model, ModelProvider provider) {}
 }

@@ -37,7 +37,6 @@
         <el-form-item label="显示名称" prop="displayName"><el-input v-model="form.displayName" /></el-form-item>
         <el-form-item label="上游模型"><el-input v-model="form.upstreamModel" /></el-form-item>
         <el-form-item label="生成路径"><el-input v-model="form.generationPath" /></el-form-item>
-        <el-form-item label="编辑路径"><el-input v-model="form.editPath" /></el-form-item>
         <el-form-item label="单张价格（USD）" prop="unitPriceUsd"><el-input-number v-model="form.unitPriceUsd" :min="0" :precision="4" :step="0.01" style="width:100%" /></el-form-item>
         <el-form-item label="异步模式"><el-switch v-model="form.asyncMode" :active-value="1" :inactive-value="0" /></el-form-item>
         <el-form-item label="支持蒙版"><el-switch v-model="form.supportsMask" :active-value="1" :inactive-value="0" /></el-form-item>
@@ -56,7 +55,7 @@ import { imageModelApi, modelProviderApi } from '../../api/system'
 
 const list = ref([]), providers = ref([]), visible = ref(false), formRef = ref(null)
 const filters = reactive({ name: '' }), page = reactive({ pageNum: 1, pageSize: 10, total: 0 })
-const empty = () => ({ id: null, providerId: null, modelKey: '', displayName: '', upstreamModel: '', generationPath: '/v1/images/generations', editPath: '/v1/images/edits', asyncMode: 1, supportsMask: 1, unitPriceUsd: 0.5, enabled: 1, modelSort: 1 })
+const empty = () => ({ id: null, providerId: null, modelKey: '', displayName: '', upstreamModel: '', generationPath: '/v1/images/generations', asyncMode: 1, supportsMask: 1, unitPriceUsd: 0.5, enabled: 1, modelSort: 1 })
 const form = reactive(empty())
 const rules = { providerId: [{ required: true, message: '请选择服务商' }], modelKey: [{ required: true, message: '请输入模型标识' }], displayName: [{ required: true, message: '请输入显示名称' }], unitPriceUsd: [{ required: true, message: '请输入单张价格' }] }
 const providerName = (id) => providers.value.find(item => item.id === id)?.name || '-'

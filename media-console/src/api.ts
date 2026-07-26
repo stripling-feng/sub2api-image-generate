@@ -3,6 +3,12 @@ type ApiErrorDetail = {
   message?: string;
 };
 
+type ApiResponseEnvelope = {
+  code?: unknown;
+  message?: unknown;
+  data?: unknown;
+};
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const apiKey = localStorage.getItem("apiKey") ?? "";
   const hasFormBody = options.body instanceof FormData;
@@ -17,9 +23,12 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   });
 
   const json = await response.json().catch(() => ({}));
+  const envelope = json as ApiResponseEnvelope;
+  const apiCode = typeof envelope.code === "number" ? envelope.code : undefined;
   if (!response.ok) {
-    const details = Array.isArray(json.details)
-      ? json.details
+    const detailItems = Array.isArray(json.details) ? json.details : (Array.isArray(envelope.data) ? envelope.data : []);
+    const details = detailItems.length
+      ? detailItems
         .map((item: ApiErrorDetail) => {
           const path = Array.isArray(item?.path) ? item.path.join(".") : "";
           const message = typeof item?.message === "string" ? item.message : "";
@@ -28,8 +37,14 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
         .filter(Boolean)
         .join("; ")
       : "";
-    const message = details || (typeof json.error === "string" ? json.error : `HTTP ${response.status}`);
+    const message = details
+      || (typeof envelope.message === "string" ? envelope.message : "")
+      || (typeof json.error === "string" ? json.error : `HTTP ${response.status}`);
     throw new Error(message);
+  }
+  if (apiCode !== undefined) {
+    if (apiCode !== 200) throw new Error(typeof envelope.message === "string" ? envelope.message : "请求失败");
+    return envelope.data as T;
   }
   return json as T;
 }

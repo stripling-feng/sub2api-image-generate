@@ -13,7 +13,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.feng.system.module.image.entity.AiModel;
 import com.feng.system.module.image.entity.ApiProfile;
 import com.feng.system.module.image.entity.ModelProvider;
-import com.feng.system.module.video.mapper.VideoGenerationJobMapper;
+import com.feng.system.module.media.entity.MediaTask;
+import com.feng.system.module.media.mapper.MediaTaskMapper;
+import com.feng.system.module.media.service.MediaBillingRecordService;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -30,8 +32,8 @@ class VideoGenerationServiceTest {
 
     @Test
     void rejectsBase64VideoRequestValues() {
-        VideoGenerationService service = new VideoGenerationService(mock(VideoGenerationJobMapper.class), mock(VideoGateway.class),
-                mock(Sub2apiBillingService.class), mock(ImageModelConfigService.class),
+        VideoGenerationService service = new VideoGenerationService(mock(MediaTaskMapper.class), mock(VideoGateway.class),
+                mock(Sub2apiBillingService.class), mock(MediaBillingRecordService.class), mock(ImageModelConfigService.class),
                 mock(VideoMaterialUploadService.class), new ObjectMapper());
         ApiProfile profile = new ApiProfile(); profile.setId("profile-1"); profile.setEncryptedKey("user-key");
 
@@ -42,12 +44,13 @@ class VideoGenerationServiceTest {
 
     @Test
     void omniFastUsesJsonForSingleImageMultipartForMultipleAndSupportsIndependentFrames() throws Exception {
-        VideoGenerationJobMapper jobs = mock(VideoGenerationJobMapper.class);
+        MediaTaskMapper jobs = mock(MediaTaskMapper.class);
         VideoGateway gateway = mock(VideoGateway.class);
         Sub2apiBillingService billing = mock(Sub2apiBillingService.class);
+        MediaBillingRecordService mediaBilling = mock(MediaBillingRecordService.class);
         ImageModelConfigService configs = mock(ImageModelConfigService.class);
         VideoMaterialUploadService uploads = mock(VideoMaterialUploadService.class);
-        VideoGenerationService service = new VideoGenerationService(jobs, gateway, billing, configs, uploads, new ObjectMapper());
+        VideoGenerationService service = new VideoGenerationService(jobs, gateway, billing, mediaBilling, configs, uploads, new ObjectMapper());
         AiModel model = new AiModel(); model.setId(12L); model.setModelKey("omni-fast"); model.setUpstreamModel("omni-fast");
         model.setGenerationPath("/v1/videos"); model.setBillingMode("PER_REQUEST"); model.setUnitPriceUsd(BigDecimal.ZERO);
         ModelProvider provider = new ModelProvider(); provider.setBaseUrl("https://api.example.com"); provider.setVideoApiKey("secret-key");
@@ -83,30 +86,31 @@ class VideoGenerationServiceTest {
         ArgumentCaptor<List<String>> references = ArgumentCaptor.forClass(List.class);
         verify(gateway).create(anyString(), anyString(), eq("/v1/videos"), anyMap(), references.capture());
         assertEquals(List.of("https://image.tcboys.de/a.png", "https://image.tcboys.de/b.png"), references.getValue());
-        ArgumentCaptor<com.feng.system.module.video.entity.VideoGenerationJob> jobsCreated = ArgumentCaptor.forClass(
-                com.feng.system.module.video.entity.VideoGenerationJob.class);
-        verify(jobs, times(4)).insert(jobsCreated.capture());
-        Map<?, ?> firstAudit = new ObjectMapper().readValue(jobsCreated.getAllValues().get(0).getRawRequest(), Map.class);
-        Map<?, ?> firstClient = (Map<?, ?>) firstAudit.get("client");
-        Map<?, ?> firstUpstream = (Map<?, ?>) firstAudit.get("upstream");
+        ArgumentCaptor<MediaTask> jobsCreated = ArgumentCaptor.forClass(MediaTask.class);
+        verify(mediaBilling, times(4)).begin(jobsCreated.capture(),
+                argThat(amount -> amount.compareTo(BigDecimal.ZERO) == 0), eq(true));
+        Map<?, ?> firstClient = new ObjectMapper().readValue(jobsCreated.getAllValues().get(0).getUserRequest(), Map.class);
+        Map<?, ?> firstUpstream = new ObjectMapper().readValue(jobsCreated.getAllValues().get(0).getUpstreamRequest(), Map.class);
         assertEquals(Map.of("name", "a.png", "mimeType", "image/png", "sizeBytes", 8),
                 ((List<?>) firstClient.get("uploadedImages")).get(0));
         assertEquals("https://image.tcboys.de/a.png", firstUpstream.get("image_url"));
-        Map<?, ?> multiAudit = new ObjectMapper().readValue(jobsCreated.getAllValues().get(1).getRawRequest(), Map.class);
+        Map<?, ?> multiAudit = new ObjectMapper().readValue(jobsCreated.getAllValues().get(1).getUpstreamRequest(), Map.class);
         assertEquals(List.of("https://image.tcboys.de/a.png", "https://image.tcboys.de/b.png"),
-                ((Map<?, ?>) multiAudit.get("upstream")).get("input_reference"));
-        assertTrue(jobsCreated.getAllValues().stream().noneMatch(job -> job.getRawRequest().contains("base64")));
-        assertTrue(jobsCreated.getAllValues().stream().allMatch(job -> job.getRawResponses().contains("create")));
+                multiAudit.get("input_reference"));
+        assertTrue(jobsCreated.getAllValues().stream().noneMatch(job ->
+                job.getUserRequest().contains("base64") || job.getUpstreamRequest().contains("base64")));
+        assertTrue(jobsCreated.getAllValues().stream().allMatch(job -> job.getUpstreamResponse().contains("task-")));
     }
 
     @Test
     void omniV2vDefaultsToTenSecondsAndOmitsFixedAndAudioFieldsUpstream() throws Exception {
-        VideoGenerationJobMapper jobs = mock(VideoGenerationJobMapper.class);
+        MediaTaskMapper jobs = mock(MediaTaskMapper.class);
         VideoGateway gateway = mock(VideoGateway.class);
         Sub2apiBillingService billing = mock(Sub2apiBillingService.class);
+        MediaBillingRecordService mediaBilling = mock(MediaBillingRecordService.class);
         ImageModelConfigService configs = mock(ImageModelConfigService.class);
         VideoMaterialUploadService uploads = mock(VideoMaterialUploadService.class);
-        VideoGenerationService service = new VideoGenerationService(jobs, gateway, billing, configs, uploads, new ObjectMapper());
+        VideoGenerationService service = new VideoGenerationService(jobs, gateway, billing, mediaBilling, configs, uploads, new ObjectMapper());
         AiModel model = new AiModel(); model.setId(11L); model.setModelKey("omni-v2v"); model.setUpstreamModel("omni-v2v");
         model.setGenerationPath("/v1/videos"); model.setBillingMode("PER_REQUEST"); model.setUnitPriceUsd(BigDecimal.ZERO);
         ModelProvider provider = new ModelProvider(); provider.setBaseUrl("https://api.example.com"); provider.setVideoApiKey("secret-key");
@@ -134,17 +138,17 @@ class VideoGenerationServiceTest {
         assertEquals(false, body.getAllValues().get(1).containsKey("reference_image_urls"));
         body.getAllValues().forEach(value -> assertEquals(false,
                 value.containsKey("duration") || value.containsKey("resolution") || value.containsKey("audio")));
-        verify(jobs, atLeastOnce()).updateById(argThat(job -> Integer.valueOf(10).equals(job.getDuration())));
+        verify(mediaBilling, atLeastOnce()).begin(argThat(job -> job.getTaskData().contains("\"duration\":10")), any(), eq(true));
     }
 
     @Test
     void fansOutBatchAndUsesConfiguredUpstreamModelAndPerSecondPrice() throws Exception {
-        VideoGenerationJobMapper jobs = mock(VideoGenerationJobMapper.class);
+        MediaTaskMapper jobs = mock(MediaTaskMapper.class);
         VideoGateway gateway = mock(VideoGateway.class);
         Sub2apiBillingService billing = mock(Sub2apiBillingService.class);
         ImageModelConfigService configs = mock(ImageModelConfigService.class);
         VideoMaterialUploadService uploads = mock(VideoMaterialUploadService.class);
-        VideoGenerationService service = new VideoGenerationService(jobs, gateway, billing, configs, uploads, new ObjectMapper());
+        VideoGenerationService service = new VideoGenerationService(jobs, gateway, billing, mock(MediaBillingRecordService.class), configs, uploads, new ObjectMapper());
 
         AiModel model = new AiModel();
         model.setId(7L); model.setModelKey("seedance-2.0"); model.setUpstreamModel("configured-seedance");
@@ -174,12 +178,12 @@ class VideoGenerationServiceTest {
 
     @Test
     void seedanceSendsMultimodalHttpsUrls() throws Exception {
-        VideoGenerationJobMapper jobs = mock(VideoGenerationJobMapper.class);
+        MediaTaskMapper jobs = mock(MediaTaskMapper.class);
         VideoGateway gateway = mock(VideoGateway.class);
         Sub2apiBillingService billing = mock(Sub2apiBillingService.class);
         ImageModelConfigService configs = mock(ImageModelConfigService.class);
         VideoMaterialUploadService uploads = mock(VideoMaterialUploadService.class);
-        VideoGenerationService service = new VideoGenerationService(jobs, gateway, billing, configs, uploads, new ObjectMapper());
+        VideoGenerationService service = new VideoGenerationService(jobs, gateway, billing, mock(MediaBillingRecordService.class), configs, uploads, new ObjectMapper());
 
         AiModel model = new AiModel();
         model.setId(10L); model.setModelKey("seedance-2.0-mini"); model.setUpstreamModel("seedance-2.0-mini");
@@ -192,14 +196,14 @@ class VideoGenerationServiceTest {
         when(gateway.create(anyString(), anyString(), anyString(), anyMap()))
                 .thenReturn(new VideoGateway.Task("task-1", "PENDING", 0, null, null, Map.of()));
         when(uploads.uploadImage(any()))
-                .thenReturn(new VideoMaterialUploadService.Uploaded("https://media.example.com/uploads/video-materials/img1.png", "img1.png", "image/png", 8))
-                .thenReturn(new VideoMaterialUploadService.Uploaded("https://media.example.com/uploads/video-materials/img2.png", "img2.png", "image/png", 8));
+                .thenReturn(new VideoMaterialUploadService.Uploaded("https://media.example.com/material/20260726/img1.png", "img1.png", "image/png", 8))
+                .thenReturn(new VideoMaterialUploadService.Uploaded("https://media.example.com/material/20260726/img2.png", "img2.png", "image/png", 8));
 
         ApiProfile profile = new ApiProfile();
         profile.setId("profile-1"); profile.setEncryptedKey("user-key");
         byte[] png = new byte[] {(byte) 0x89, 'P', 'N', 'G', 13, 10, 26, 10};
         service.generate(profile, request(Map.of(
-                "model", "seedance-2.0-mini", "prompt", "参考@image1与@image2，动作@video1，配乐@audio1",
+                "model", "seedance-2.0-mini", "prompt", "鍙傝€傽image1涓嶡image2锛屽姩浣淍video1锛岄厤涔怈audio1",
                 "duration", 4, "aspectRatio", "1:1", "resolution", "480p", "generateAudio", true,
                 "referenceVideoUrls", List.of("https://image.tcboys.de/ref.mp4"),
                 "referenceAudioUrls", List.of("https://image.tcboys.de/ref.mp3"))),
@@ -207,8 +211,8 @@ class VideoGenerationServiceTest {
 
         ArgumentCaptor<Map<String, Object>> body = ArgumentCaptor.forClass(Map.class);
         verify(gateway).create(eq("https://api.example.com"), eq("secret-key"), eq("/v1/videos"), body.capture());
-        assertEquals("https://media.example.com/uploads/video-materials/img1.png", body.getValue().get("image_url"));
-        assertEquals(List.of("https://media.example.com/uploads/video-materials/img2.png"), body.getValue().get("reference_image_urls"));
+        assertEquals("https://media.example.com/material/20260726/img1.png", body.getValue().get("image_url"));
+        assertEquals(List.of("https://media.example.com/material/20260726/img2.png"), body.getValue().get("reference_image_urls"));
         assertEquals(List.of("https://image.tcboys.de/ref.mp4"), body.getValue().get("reference_videos"));
         assertEquals(List.of("https://image.tcboys.de/ref.mp3"), body.getValue().get("reference_audios"));
         assertEquals(false, String.valueOf(body.getValue()).contains("data:image"));
@@ -216,12 +220,12 @@ class VideoGenerationServiceTest {
 
     @Test
     void seedanceUsesPreuploadedImageUrlsFromJsonRequest() throws Exception {
-        VideoGenerationJobMapper jobs = mock(VideoGenerationJobMapper.class);
+        MediaTaskMapper jobs = mock(MediaTaskMapper.class);
         VideoGateway gateway = mock(VideoGateway.class);
         Sub2apiBillingService billing = mock(Sub2apiBillingService.class);
         ImageModelConfigService configs = mock(ImageModelConfigService.class);
         VideoMaterialUploadService uploads = mock(VideoMaterialUploadService.class);
-        VideoGenerationService service = new VideoGenerationService(jobs, gateway, billing, configs, uploads, new ObjectMapper());
+        VideoGenerationService service = new VideoGenerationService(jobs, gateway, billing, mock(MediaBillingRecordService.class), configs, uploads, new ObjectMapper());
 
         AiModel model = new AiModel();
         model.setId(10L); model.setModelKey("seedance-2.0-mini"); model.setUpstreamModel("seedance-2.0-mini");
@@ -251,12 +255,12 @@ class VideoGenerationServiceTest {
 
     @Test
     void omniFastUsesPreuploadedFrameUrlsFromJsonRequest() throws Exception {
-        VideoGenerationJobMapper jobs = mock(VideoGenerationJobMapper.class);
+        MediaTaskMapper jobs = mock(MediaTaskMapper.class);
         VideoGateway gateway = mock(VideoGateway.class);
         Sub2apiBillingService billing = mock(Sub2apiBillingService.class);
         ImageModelConfigService configs = mock(ImageModelConfigService.class);
         VideoMaterialUploadService uploads = mock(VideoMaterialUploadService.class);
-        VideoGenerationService service = new VideoGenerationService(jobs, gateway, billing, configs, uploads, new ObjectMapper());
+        VideoGenerationService service = new VideoGenerationService(jobs, gateway, billing, mock(MediaBillingRecordService.class), configs, uploads, new ObjectMapper());
 
         AiModel model = new AiModel(); model.setId(12L); model.setModelKey("omni-fast"); model.setUpstreamModel("omni-fast");
         model.setGenerationPath("/v1/videos"); model.setBillingMode("PER_REQUEST"); model.setUnitPriceUsd(BigDecimal.ZERO);
@@ -281,12 +285,12 @@ class VideoGenerationServiceTest {
 
     @Test
     void grokRequestSendsSecondsAsString() throws Exception {
-        VideoGenerationJobMapper jobs = mock(VideoGenerationJobMapper.class);
+        MediaTaskMapper jobs = mock(MediaTaskMapper.class);
         VideoGateway gateway = mock(VideoGateway.class);
         Sub2apiBillingService billing = mock(Sub2apiBillingService.class);
         ImageModelConfigService configs = mock(ImageModelConfigService.class);
         VideoMaterialUploadService uploads = mock(VideoMaterialUploadService.class);
-        VideoGenerationService service = new VideoGenerationService(jobs, gateway, billing, configs, uploads, new ObjectMapper());
+        VideoGenerationService service = new VideoGenerationService(jobs, gateway, billing, mock(MediaBillingRecordService.class), configs, uploads, new ObjectMapper());
 
         AiModel model = new AiModel();
         model.setId(8L); model.setModelKey("grok-video"); model.setUpstreamModel("grok-video");
@@ -312,12 +316,12 @@ class VideoGenerationServiceTest {
 
     @Test
     void grokVideoUploadsReferenceImagesAsUrls() throws Exception {
-        VideoGenerationJobMapper jobs = mock(VideoGenerationJobMapper.class);
+        MediaTaskMapper jobs = mock(MediaTaskMapper.class);
         VideoGateway gateway = mock(VideoGateway.class);
         Sub2apiBillingService billing = mock(Sub2apiBillingService.class);
         ImageModelConfigService configs = mock(ImageModelConfigService.class);
         VideoMaterialUploadService uploads = mock(VideoMaterialUploadService.class);
-        VideoGenerationService service = new VideoGenerationService(jobs, gateway, billing, configs, uploads, new ObjectMapper());
+        VideoGenerationService service = new VideoGenerationService(jobs, gateway, billing, mock(MediaBillingRecordService.class), configs, uploads, new ObjectMapper());
 
         AiModel model = new AiModel();
         model.setId(8L); model.setModelKey("grok-video"); model.setUpstreamModel("grok-video");
@@ -331,7 +335,7 @@ class VideoGenerationServiceTest {
         when(gateway.create(anyString(), anyString(), anyString(), anyMap()))
                 .thenReturn(new VideoGateway.Task("task-1", "PENDING", 0, null, null, Map.of()));
         when(uploads.uploadImage(any())).thenReturn(new VideoMaterialUploadService.Uploaded(
-                "https://media.example.com/uploads/video-materials/a.png", "a.png", "image/png", 8));
+                "https://media.example.com/material/20260726/a.png", "a.png", "image/png", 8));
 
         ApiProfile profile = new ApiProfile();
         profile.setId("profile-1"); profile.setEncryptedKey("user-key");
@@ -341,18 +345,18 @@ class VideoGenerationServiceTest {
 
         ArgumentCaptor<Map<String, Object>> body = ArgumentCaptor.forClass(Map.class);
         verify(gateway).create(eq("https://api.example.com"), eq("secret-key"), eq("/v1/videos"), body.capture());
-        assertEquals(List.of("https://media.example.com/uploads/video-materials/a.png"), body.getValue().get("image_urls"));
+        assertEquals(List.of("https://media.example.com/material/20260726/a.png"), body.getValue().get("image_urls"));
         verify(uploads).uploadImage(any());
     }
 
     @Test
     void grokVideoAcceptsPreuploadedReferenceImageUrls() throws Exception {
-        VideoGenerationJobMapper jobs = mock(VideoGenerationJobMapper.class);
+        MediaTaskMapper jobs = mock(MediaTaskMapper.class);
         VideoGateway gateway = mock(VideoGateway.class);
         Sub2apiBillingService billing = mock(Sub2apiBillingService.class);
         ImageModelConfigService configs = mock(ImageModelConfigService.class);
         VideoMaterialUploadService uploads = mock(VideoMaterialUploadService.class);
-        VideoGenerationService service = new VideoGenerationService(jobs, gateway, billing, configs, uploads, new ObjectMapper());
+        VideoGenerationService service = new VideoGenerationService(jobs, gateway, billing, mock(MediaBillingRecordService.class), configs, uploads, new ObjectMapper());
 
         AiModel model = new AiModel();
         model.setId(8L); model.setModelKey("grok-video"); model.setUpstreamModel("grok-video");
@@ -380,12 +384,12 @@ class VideoGenerationServiceTest {
 
     @Test
     void grok15SendsImageObjectAndDuration() throws Exception {
-        VideoGenerationJobMapper jobs = mock(VideoGenerationJobMapper.class);
+        MediaTaskMapper jobs = mock(MediaTaskMapper.class);
         VideoGateway gateway = mock(VideoGateway.class);
         Sub2apiBillingService billing = mock(Sub2apiBillingService.class);
         ImageModelConfigService configs = mock(ImageModelConfigService.class);
         VideoMaterialUploadService uploads = mock(VideoMaterialUploadService.class);
-        VideoGenerationService service = new VideoGenerationService(jobs, gateway, billing, configs, uploads, new ObjectMapper());
+        VideoGenerationService service = new VideoGenerationService(jobs, gateway, billing, mock(MediaBillingRecordService.class), configs, uploads, new ObjectMapper());
 
         AiModel model = new AiModel();
         model.setId(9L); model.setModelKey("grok-video-1.5"); model.setUpstreamModel("grok-video-1.5");
@@ -399,7 +403,7 @@ class VideoGenerationServiceTest {
         when(gateway.create(anyString(), anyString(), anyString(), anyMap()))
                 .thenReturn(new VideoGateway.Task("task-1", "PENDING", 0, null, null, Map.of()));
         when(uploads.uploadImage(any())).thenReturn(new VideoMaterialUploadService.Uploaded(
-                "https://media.example.com/uploads/video-materials/a.png", "a.png", "image/png", 8));
+                "https://media.example.com/material/20260726/a.png", "a.png", "image/png", 8));
 
         ApiProfile profile = new ApiProfile();
         profile.setId("profile-1"); profile.setEncryptedKey("user-key");
@@ -410,7 +414,7 @@ class VideoGenerationServiceTest {
         ArgumentCaptor<Map<String, Object>> body = ArgumentCaptor.forClass(Map.class);
         verify(gateway).create(eq("https://api.example.com"), eq("secret-key"), eq("/v1/videos"), body.capture());
         assertEquals(true, body.getValue().containsKey("image"));
-        assertEquals(Map.of("url", "https://media.example.com/uploads/video-materials/a.png"), body.getValue().get("image"));
+        assertEquals(Map.of("url", "https://media.example.com/material/20260726/a.png"), body.getValue().get("image"));
         assertEquals(10, body.getValue().get("duration"));
         assertEquals(false, body.getValue().containsKey("seconds"));
         assertEquals(false, body.getValue().containsKey("image_url"));

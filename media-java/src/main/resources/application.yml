@@ -62,9 +62,8 @@ image:
   billing-account-id: ${SUB2API_BILLING_ACCOUNT_ID:}
   charge-on-failure: ${IMAGE2_CHARGE_ON_FAILURE:false}
   request-timeout-ms: ${IMAGE_REQUEST_TIMEOUT_MS:900000}
-  poll-interval-ms: ${IMAGE_TASK_POLL_INTERVAL_MS:2000}
+  poll-interval-ms: ${IMAGE_TASK_POLL_INTERVAL_MS:5000}
   poll-max-duration-ms: ${IMAGE_TASK_MAX_DURATION_MS:1800000}
-  poll-lease-ms: ${IMAGE_TASK_LEASE_MS:60000}
   cleanup-interval-ms: ${IMAGE_CLEANUP_INTERVAL_MS:3600000}
   upstream-base-url: ${UPSTREAM_BASE_URL:}
 
@@ -73,4 +72,3 @@ video:
   request-timeout-ms: ${VIDEO_REQUEST_TIMEOUT_MS:900000}
   poll-interval-ms: ${VIDEO_TASK_POLL_INTERVAL_MS:5000}
   poll-max-duration-ms: ${VIDEO_TASK_MAX_DURATION_MS:7200000}
-  poll-lease-ms: ${VIDEO_TASK_LEASE_MS:60000}

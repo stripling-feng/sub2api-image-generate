@@ -13,13 +13,13 @@ public class GptImage2AspectRatioRequestFormatter implements ImageGenerateReques
 
     @Override
     public Map<String, Object> format(ImageGenerateRequest request) {
-        Map<String, Object> value = new LinkedHashMap<>(request.suppliedParameters());
-        put(value, "size", firstText(request.getAspectRatio(), request.getSize()));
+        Map<String, Object> value = new LinkedHashMap<>();
+        put(value, "model", request.getModel());
+        put(value, "prompt", request.getPrompt());
+        put(value, "async", request.getAsync());
+        put(value, "size", request.getSize());
+        put(value, "images", request.getImages());
         return value;
-    }
-
-    private static String firstText(String primary, String fallback) {
-        return primary != null && !primary.isBlank() ? primary : fallback;
     }
 
     private static void put(Map<String, Object> map, String key, Object value) {

@@ -124,6 +124,24 @@ class PostgresSchemaTest {
         }
     }
 
+    @Test
+    void mediaMigrationsCommentEveryNewTableAndColumn() throws Exception {
+        Map<String, Set<String>> schema = new LinkedHashMap<>();
+        String models = read("db/migration/V15__media_model_tables.sql");
+        String tasks = read("db/migration/V16__media_task_tables.sql");
+        collectSchema(models, schema);
+        collectSchema(tasks, schema);
+        String comments = models + "\n" + tasks;
+
+        for (Map.Entry<String, Set<String>> table : schema.entrySet()) {
+            assertTrue(comments.contains("comment on table " + table.getKey() + " is"), table.getKey());
+            for (String column : table.getValue()) {
+                assertTrue(comments.contains("comment on column " + table.getKey() + "." + column + " is"),
+                        table.getKey() + "." + column);
+            }
+        }
+    }
+
     private void collectSchema(String sql, Map<String, Set<String>> schema) {
         Matcher tableMatcher = Pattern.compile("(?is)create\\s+table\\s+([\\w\"]+)\\s*\\((.*?)\\);").matcher(sql);
         while (tableMatcher.find()) {

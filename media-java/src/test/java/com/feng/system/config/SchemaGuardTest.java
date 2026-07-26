@@ -17,7 +17,7 @@ class SchemaGuardTest {
     @Test
     void requiresCurrentMigrationVersion() {
         JdbcTemplate jdbc = mock(JdbcTemplate.class);
-        when(jdbc.queryForObject(anyString(), eq(Integer.class))).thenReturn(12, 13);
+        when(jdbc.queryForObject(anyString(), eq(Integer.class))).thenReturn(15, 16);
         SchemaGuard guard = new SchemaGuard(jdbc);
 
         assertThrows(IllegalStateException.class, guard::verify);
@@ -29,5 +29,12 @@ class SchemaGuardTest {
         MapperScan scan = FengAdminApplication.class.getAnnotation(MapperScan.class);
         assertDoesNotThrow(() -> java.util.Arrays.stream(scan.value())
                 .filter("com.feng.system.module.video.mapper"::equals).findFirst().orElseThrow());
+    }
+
+    @Test
+    void applicationScansSharedMediaMappers() {
+        MapperScan scan = FengAdminApplication.class.getAnnotation(MapperScan.class);
+        assertDoesNotThrow(() -> java.util.Arrays.stream(scan.value())
+                .filter("com.feng.system.module.media.mapper"::equals).findFirst().orElseThrow());
     }
 }

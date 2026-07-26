@@ -8,8 +8,12 @@ import com.feng.system.module.image.service.ImageModelConfigService;
 
 import java.util.List;
 
+/**
+ * omni-fast 模型的生成请求:仅支持文本/图片生视频,不支持参考视频、参考音频与音频生成。
+ */
 @JsonDeserialize(using = JsonDeserializer.None.class)
 public class OmniFastVideoRequest extends VideoGenerationRequest {
+    /** 构建生成输入:omni-fast 不支持音频生成,显式传 generateAudio=true 直接拒绝。 */
     @Override
     protected VideoGenerationInput buildInput(ImageModelConfigService.RuntimeModel runtime,
             List<ImageGateway.Upload> images, ImageGateway.Upload firstFrame, ImageGateway.Upload lastFrame) {

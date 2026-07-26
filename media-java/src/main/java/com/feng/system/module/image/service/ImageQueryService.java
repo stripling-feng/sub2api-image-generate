@@ -1,163 +1,162 @@
 package com.feng.system.module.image.service;
 
-import com.feng.system.module.image.exception.ImageApiException;
-import com.feng.system.module.image.support.ImageTime;
-
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.feng.system.module.image.entity.GeneratedImage;
-import com.feng.system.module.image.entity.GenerationJob;
-import com.feng.system.module.image.entity.PromptTemplate;
-import com.feng.system.module.image.mapper.GeneratedImageMapper;
-import com.feng.system.module.image.mapper.GenerationJobMapper;
-import com.feng.system.module.image.mapper.PromptTemplateMapper;
+import com.feng.system.module.image.exception.ImageApiException;
+import com.feng.system.module.media.entity.MediaTask;
+import com.feng.system.module.media.entity.MediaTaskResult;
+import com.feng.system.module.media.mapper.MediaTaskMapper;
+import com.feng.system.module.media.service.MediaTaskData;
+import com.feng.system.module.media.service.MediaTaskResultService;
 import lombok.RequiredArgsConstructor;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
 public class ImageQueryService {
-    private final GenerationJobMapper jobMapper;
-    private final GeneratedImageMapper imageMapper;
-    private final PromptTemplateMapper templateMapper;
-    private final ObjectMapper objectMapper;
-    @Value("${image.upload-dir:./uploads}") private String uploadDir;
+    private final MediaTaskMapper tasks;
+    private final MediaTaskResultService resultService;
+    private final ImageStorageService storage;
+    private final ObjectMapper json;
 
-    public Map<String, Object> history(String profileId, int requestedPage, int requestedPageSize) {
+    public Map<String, Object> history(String apiKey, int requestedPage, int requestedPageSize) {
         int page = Math.max(1, requestedPage);
         int pageSize = Math.min(50, Math.max(1, requestedPageSize));
-        Page<GenerationJob> result = jobMapper.selectPage(new Page<>(page, pageSize),
-                new LambdaQueryWrapper<GenerationJob>().eq(GenerationJob::getProfileId, profileId)
-                        .orderByDesc(GenerationJob::getCreatedAt));
-        return Map.of("jobs", jobs(result.getRecords()), "page", page, "pageSize", pageSize,
+        Page<MediaTask> result = tasks.selectPage(new Page<>(page, pageSize), new QueryWrapper<MediaTask>()
+                .eq("api_key", apiKey)
+                .eq("task_type", "IMAGE")
+                .orderByAsc("CASE WHEN status = 'PENDING' THEN 0 ELSE 1 END")
+                .orderByDesc("created_at"));
+        return Map.of("jobs", mapTasks(result.getRecords()), "page", page, "pageSize", pageSize,
                 "total", result.getTotal(), "totalPages", Math.max(1, result.getPages()));
     }
 
-    public List<Map<String, Object>> results(String profileId, String requestId) {
-        List<GenerationJob> jobs = jobMapper.selectList(new LambdaQueryWrapper<GenerationJob>()
-                .eq(GenerationJob::getProfileId, profileId)
-                .apply("params ->> 'request_id' = {0}", requestId)
-                .orderByAsc(GenerationJob::getCreatedAt));
-        return jobs(jobs);
+    public List<Map<String, Object>> results(String apiKey, String requestId) {
+        List<MediaTask> values = tasks.selectList(new LambdaQueryWrapper<MediaTask>()
+                .eq(MediaTask::getApiKey, apiKey).eq(MediaTask::getTaskType, "IMAGE")
+                .eq(MediaTask::getRequestId, requestId).orderByAsc(MediaTask::getCreatedAt));
+        return mapTasks(values);
+    }
+
+    public DownloadedImage download(String apiKey, String imageId) {
+        MediaTaskResult result = resultService.findOwnedImageResult(apiKey, imageId);
+        if (result == null) throw new ImageApiException(404, "Image not found.");
+        ImageGateway.Download download = storage.download(result);
+        Map<String, Object> metadata = resultService.metadata(result);
+        String mimeType = download.mimeType() != null && !download.mimeType().isBlank()
+                ? download.mimeType() : String.valueOf(metadata.getOrDefault("mimeType", "image/png"));
+        return new DownloadedImage(download.bytes(), mimeType, filename(result, mimeType));
     }
 
     @Transactional
-    public void deleteImage(String profileId, String imageId) {
-        GeneratedImage image = imageMapper.selectById(imageId);
-        GenerationJob job = image == null ? null : jobMapper.selectById(image.getJobId());
-        if (image == null || job == null || !profileId.equals(job.getProfileId())) throw new ImageApiException(404, "Image not found.");
-        deleteFile(image.getFilePath());
-        imageMapper.deleteById(imageId);
+    public int deleteJobs(String apiKey) {
+        List<MediaTask> values = tasks.selectList(new LambdaQueryWrapper<MediaTask>()
+                .eq(MediaTask::getApiKey, apiKey).eq(MediaTask::getTaskType, "IMAGE"));
+        List<String> ids = values.stream().map(MediaTask::getId).toList();
+        for (MediaTaskResult result : results(ids)) storage.delete(result);
+        resultService.deleteByTaskIds(ids);
+        return ids.isEmpty() ? 0 : tasks.deleteBatchIds(ids);
     }
 
     @Transactional
-    public int deleteJobs(String profileId) {
-        List<GenerationJob> jobs = jobMapper.selectList(new LambdaQueryWrapper<GenerationJob>().eq(GenerationJob::getProfileId, profileId));
-        for (GeneratedImage image : images(jobs)) deleteFile(image.getFilePath());
-        return jobMapper.delete(new LambdaQueryWrapper<GenerationJob>().eq(GenerationJob::getProfileId, profileId));
+    public void deleteJob(String apiKey, String taskId) {
+        MediaTask task = tasks.selectOne(new LambdaQueryWrapper<MediaTask>()
+                .eq(MediaTask::getId, taskId).eq(MediaTask::getApiKey, apiKey).eq(MediaTask::getTaskType, "IMAGE"));
+        if (task == null) throw new ImageApiException(404, "Job not found.");
+        List<MediaTaskResult> values = results(List.of(taskId));
+        values.forEach(storage::delete);
+        resultService.deleteByTaskIds(List.of(taskId));
+        tasks.deleteById(taskId);
     }
 
-    @Transactional
-    public void deleteJob(String profileId, String jobId) {
-        GenerationJob job = jobMapper.selectById(jobId);
-        if (job == null || !profileId.equals(job.getProfileId())) throw new ImageApiException(404, "Job not found.");
-        for (GeneratedImage image : images(List.of(job))) deleteFile(image.getFilePath());
-        jobMapper.deleteById(jobId);
+    private List<Map<String, Object>> mapTasks(List<MediaTask> values) {
+        if (values.isEmpty()) return List.of();
+        List<String> ids = values.stream().map(MediaTask::getId).toList();
+        Map<String, List<MediaTaskResult>> byTask = results(ids).stream()
+                .collect(Collectors.groupingBy(MediaTaskResult::getTaskId));
+        return values.stream().map(task -> mapTask(task, byTask.getOrDefault(task.getId(), List.of()))).toList();
     }
 
-    public List<Map<String, Object>> templates(String profileId) {
-        return templateMapper.selectList(new LambdaQueryWrapper<PromptTemplate>().eq(PromptTemplate::getProfileId, profileId)
-                        .orderByDesc(PromptTemplate::getUpdatedAt)).stream().map(this::template).toList();
+    private List<MediaTaskResult> results(List<String> ids) {
+        return resultService.list(ids);
     }
 
-    public Map<String, Object> createTemplate(String profileId, String title, String prompt, Object params) {
-        if (title == null || title.isBlank() || title.length() > 80 || prompt == null || prompt.isBlank())
-            throw new ImageApiException(422, "Invalid request.");
-        PromptTemplate template = new PromptTemplate();
-        template.setId(id()); template.setProfileId(profileId); template.setTitle(title); template.setPrompt(prompt);
-        template.setParams(json(params == null ? Map.of() : params));
-        template.setCreatedAt(ImageTime.now()); template.setUpdatedAt(ImageTime.now());
-        templateMapper.insert(template);
-        return template(template);
-    }
-
-    public void deleteTemplate(String profileId, String id) {
-        templateMapper.delete(new LambdaQueryWrapper<PromptTemplate>().eq(PromptTemplate::getId, id)
-                .eq(PromptTemplate::getProfileId, profileId));
-    }
-
-    private List<Map<String, Object>> jobs(List<GenerationJob> jobs) {
-        Map<String, List<GeneratedImage>> byJob = images(jobs).stream().collect(Collectors.groupingBy(GeneratedImage::getJobId));
-        return jobs.stream().map(job -> job(job, byJob.getOrDefault(job.getId(), List.of()))).toList();
-    }
-
-    private List<GeneratedImage> images(List<GenerationJob> jobs) {
-        if (jobs.isEmpty()) return List.of();
-        return imageMapper.selectList(new LambdaQueryWrapper<GeneratedImage>().in(GeneratedImage::getJobId,
-                jobs.stream().map(GenerationJob::getId).toList()).orderByAsc(GeneratedImage::getSourceIndex));
-    }
-
-    private Map<String, Object> job(GenerationJob job, List<GeneratedImage> images) {
+    private Map<String, Object> mapTask(MediaTask task, List<MediaTaskResult> values) {
+        Map<String, Object> data = MediaTaskData.read(json, task.getTaskData());
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("id", job.getId()); result.put("prompt", job.getPrompt()); result.put("negativePrompt", job.getNegativePrompt());
-        result.put("model", job.getModel()); result.put("size", job.getSize()); result.put("quality", job.getQuality());
-        result.put("style", job.getStyle()); result.put("count", job.getCount()); result.put("responseFormat", job.getResponseFormat());
-        result.put("params", parse(job.getParams())); result.put("status", job.getStatus()); result.put("progress", job.getProgress());
-        result.put("upstreamStatus", job.getUpstreamStatus()); result.put("billingStatus", job.getBillingStatus());
-        result.put("billingAmount", job.getBillingAmount()); result.put("errorMessage", job.getErrorMessage());
-        result.put("durationMs", job.getDurationMs()); result.put("createdAt", iso(job.getCreatedAt()));
-        result.put("images", images.stream().map(this::image).toList());
+        result.put("id", task.getId());
+        result.put("prompt", data.get("prompt"));
+        result.put("negativePrompt", data.get("negativePrompt"));
+        result.put("model", data.get("model"));
+        result.put("size", data.get("size"));
+        result.put("quality", data.get("quality"));
+        result.put("style", data.get("style"));
+        result.put("count", data.getOrDefault("count", 1));
+        result.put("responseFormat", data.get("responseFormat"));
+        result.put("params", data.getOrDefault("params", Map.of()));
+        result.put("status", task.getStatus());
+        result.put("progress", task.getProgress());
+        result.put("upstreamStatus", data.get("upstreamStatus"));
+        result.put("billingStatus", task.getBillingStatus());
+        result.put("billingAmount", task.getBillingAmount());
+        result.put("errorMessage", task.getErrorMessage());
+        result.put("durationMs", task.getDurationMs());
+        result.put("createdAt", iso(task.getCreatedAt()));
+        result.put("images", values.stream().map(this::mapResult).toList());
         return result;
     }
 
-    private Map<String, Object> image(GeneratedImage image) {
+    private Map<String, Object> mapResult(MediaTaskResult value) {
+        Map<String, Object> metadata = resultService.metadata(value);
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("id", image.getId()); result.put("jobId", image.getJobId()); result.put("publicUrl", image.getPublicUrl());
-        result.put("mimeType", image.getMimeType()); result.put("width", image.getWidth()); result.put("height", image.getHeight());
-        result.put("sizeBytes", image.getSizeBytes()); result.put("createdAt", iso(image.getCreatedAt()));
+        result.put("id", value.getId());
+        result.put("jobId", value.getTaskId());
+        result.put("publicUrl", value.getAddress());
+        result.put("mimeType", metadata.get("mimeType"));
+        result.put("width", number(metadata.get("width")));
+        result.put("height", number(metadata.get("height")));
+        result.put("sizeBytes", number(metadata.get("sizeBytes")));
+        result.put("createdAt", iso(value.getCreatedAt()));
         return result;
     }
 
-    private Map<String, Object> template(PromptTemplate template) {
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("id", template.getId()); result.put("title", template.getTitle()); result.put("prompt", template.getPrompt());
-        result.put("params", parse(template.getParams())); result.put("createdAt", iso(template.getCreatedAt()));
-        result.put("updatedAt", iso(template.getUpdatedAt())); return result;
+    private Integer number(Object value) {
+        if (value == null) return null;
+        if (value instanceof Number number) return number.intValue();
+        try { return Integer.valueOf(String.valueOf(value)); }
+        catch (Exception ignored) { return null; }
     }
 
-    private Object parse(String json) {
-        try { return objectMapper.readValue(json, new TypeReference<Map<String, Object>>() {}); }
-        catch (Exception e) { return Map.of(); }
+    private static String filename(MediaTaskResult result, String mimeType) {
+        String address = result.getAddress() == null ? "" : result.getAddress().split("\\?")[0];
+        int slash = address.lastIndexOf('/');
+        String name = slash >= 0 ? address.substring(slash + 1) : address;
+        if (!name.isBlank()) return name;
+        return result.getId() + extension(mimeType);
     }
 
-    private String json(Object value) {
-        try { return objectMapper.writeValueAsString(value); }
-        catch (Exception e) { throw new ImageApiException(422, "Invalid request."); }
+    private static String extension(String mimeType) {
+        return switch (mimeType == null ? "" : mimeType.toLowerCase()) {
+            case "image/jpeg", "image/jpg" -> ".jpg";
+            case "image/webp" -> ".webp";
+            case "image/gif" -> ".gif";
+            default -> ".png";
+        };
     }
 
-    private void deleteFile(String file) {
-        try {
-            Path root = Path.of(uploadDir).toAbsolutePath().normalize();
-            Path target = Path.of(file).toAbsolutePath().normalize();
-            if (target.startsWith(root)) Files.deleteIfExists(target);
-        } catch (Exception ignored) { }
+    private static String iso(LocalDateTime value) {
+        return value == null ? null : value.toInstant(ZoneOffset.UTC).toString();
     }
 
-    private static String iso(LocalDateTime value) { return value == null ? null : value.toInstant(ZoneOffset.UTC).toString(); }
-    private static String id() { return UUID.randomUUID().toString().replace("-", ""); }
+    public record DownloadedImage(byte[] bytes, String mimeType, String filename) {}
 }

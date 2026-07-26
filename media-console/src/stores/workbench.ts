@@ -1,33 +1,25 @@
 import { defineStore } from "pinia";
 import { api } from "../api";
-import type { GenerationJob, Profile, PromptTemplate } from "../types";
+import type { GenerationJob, Profile } from "../types";
 
 type GeneratePayload = {
   prompt: string;
-  negativePrompt?: string;
   model: string;
-  size: string;
-  aspectRatio?: string;
-  customAspectRatio?: string;
+  async: true;
+  size?: string;
+  aspect_ratio?: string;
   quality?: string;
-  outputFormat?: "png" | "jpeg" | "webp";
   count: number;
-  responseFormat: "url";
-  extraParams: Record<string, unknown>;
-  parameters?: Record<string, unknown>;
   referenceImages?: Array<{
     name: string;
     mimeType: string;
     file: File;
   }>;
-  mask?: { name: string; mimeType: "image/png"; file: File };
-  referenceImageUrls?: string[];
-  maskUrl?: string;
+  images?: string[];
 };
 
 let resultPollTimer: number | undefined;
 const pendingDeletedJobIds = new Set<string>();
-const pendingDeletedImageIds = new Set<string>();
 const pendingDeletedRequestIds = new Set<string>();
 const mockJobPrefix = "mock-job-";
 const mockImagePrefix = "mock-image-";
@@ -50,24 +42,22 @@ function createLocalPendingJobs(payload: GeneratePayload, requestId: string, cou
   const now = new Date().toISOString();
   const total = Math.max(1, Math.min(10, Number(count) || 1));
 
-  return [{
-    id: `${localJobPrefix}${requestId}`,
+  return Array.from({ length: total }, (_item, index) => ({
+    id: `${localJobPrefix}${requestId}-${index + 1}`,
     prompt: payload.prompt,
-    negativePrompt: payload.negativePrompt ?? null,
+    negativePrompt: null,
     model: payload.model,
-    size: payload.size,
+    size: payload.size ?? payload.aspect_ratio ?? "auto",
     quality: payload.quality ?? null,
     style: null,
-    count: total,
-    responseFormat: payload.responseFormat,
+    count: 1,
+    responseFormat: "url",
     params: {
-      ...payload.extraParams,
       request_id: requestId,
-      request_index: 1,
-      request_total: 1,
-      output_format: payload.outputFormat,
-      aspect_ratio: payload.aspectRatio,
-      custom_aspect_ratio: payload.customAspectRatio
+      request_index: index + 1,
+      request_total: total,
+      aspect_ratio: payload.aspect_ratio,
+      reference_image_count: payload.referenceImages?.length ?? payload.images?.length ?? 0
     },
     status: "PENDING",
     progress: 0,
@@ -75,7 +65,7 @@ function createLocalPendingJobs(payload: GeneratePayload, requestId: string, cou
     durationMs: null,
     createdAt: now,
     images: []
-  }];
+  }));
 }
 
 function createLocalRequestId() {
@@ -136,7 +126,6 @@ export const useWorkbenchStore = defineStore("workbench", {
   state: () => ({
     profile: null as Profile | null,
     jobs: [] as GenerationJob[],
-    templates: [] as PromptTemplate[],
     historyPage: 1,
     historyPageSize: defaultHistoryPageSize,
     historyTotal: 0,
@@ -154,10 +143,8 @@ export const useWorkbenchStore = defineStore("workbench", {
         resultPollTimer = undefined;
       }
       pendingDeletedJobIds.clear();
-      pendingDeletedImageIds.clear();
       pendingDeletedRequestIds.clear();
       this.jobs = [];
-      this.templates = [];
       this.historyPage = 1;
       this.historyTotal = 0;
       this.historyTotalPages = 1;
@@ -179,7 +166,7 @@ export const useWorkbenchStore = defineStore("workbench", {
           keyHashPreview: `${normalizedApiKey.slice(0, 4)}...`
         };
         this.status = "";
-        await Promise.all([this.loadHistory(), this.loadTemplates()]);
+        await this.loadHistory();
       } catch (error) {
         this.error = error instanceof Error ? error.message : "连接失败";
         throw error;
@@ -197,10 +184,7 @@ export const useWorkbenchStore = defineStore("workbench", {
       logWorkbench("generate.start", {
         optimisticRequestId,
         model: payload.model,
-        size: payload.size,
         count: payload.count,
-        responseFormat: payload.responseFormat,
-        outputFormat: payload.outputFormat,
         referenceImageCount: payload.referenceImages?.length ?? 0,
         promptChars: payload.prompt.length
       });
@@ -213,13 +197,19 @@ export const useWorkbenchStore = defineStore("workbench", {
       try {
         const referenceImages = payload.referenceImages ?? [];
         let data: { requestId?: string; count?: number; jobs?: GenerationJob[]; job?: GenerationJob };
-        const referenceImageUrls = await Promise.all(referenceImages.map(uploadReferenceImage));
-        const maskUrl = payload.mask ? await uploadReferenceImage(payload.mask) : undefined;
-        const { referenceImages: _referenceImages, mask: _mask, ...jsonPayload } = payload;
+        const images = await Promise.all(referenceImages.map(uploadReferenceImage));
+        const body: Record<string, unknown> = {
+          model: payload.model,
+          prompt: payload.prompt,
+          async: payload.async,
+          count: payload.count,
+          images
+        };
+        if (payload.size) body.size = payload.size;
+        if (payload.aspect_ratio) body.aspect_ratio = payload.aspect_ratio;
+        if (payload.quality) body.quality = payload.quality;
         data = await api.post("/api/images/generate", {
-          ...jsonPayload,
-          referenceImageUrls,
-          maskUrl
+          ...body
         });
         logWorkbench("generate.accepted", {
           optimisticRequestId,
@@ -277,7 +267,7 @@ export const useWorkbenchStore = defineStore("workbench", {
         }
 
         await Promise.all(requestIds.map((requestId) => this.loadCurrentResults(requestId).catch(() => undefined)));
-      }, 2000);
+      }, 5000);
     },
     async loadHistory(page?: number) {
       const startedAt = Date.now();
@@ -303,10 +293,7 @@ export const useWorkbenchStore = defineStore("workbench", {
             const requestId = jobRequestId(job);
             return !pendingDeletedJobIds.has(job.id) && (!requestId || !pendingDeletedRequestIds.has(requestId));
           })
-          .map((job) => ({
-            ...job,
-            images: (job.images ?? []).filter((image) => !pendingDeletedImageIds.has(image.id))
-          }));
+          .map((job) => ({ ...job, images: job.images ?? [] }));
         const remoteRequestIds = new Set(remoteJobs.flatMap((job) => {
           const requestId = jobRequestId(job);
           return requestId ? [requestId] : [];
@@ -354,10 +341,7 @@ export const useWorkbenchStore = defineStore("workbench", {
       const remoteJobs = data.jobs
         .map(normalizeJob)
         .filter((job) => !pendingDeletedJobIds.has(job.id))
-        .map((job) => ({
-          ...job,
-          images: (job.images ?? []).filter((image) => !pendingDeletedImageIds.has(image.id))
-        }));
+        .map((job) => ({ ...job, images: job.images ?? [] }));
       this.jobs = mergeRequestJobs(this.jobs, remoteJobs, targetRequestId);
       logWorkbench("results.load.done", {
         requestId: targetRequestId,
@@ -371,31 +355,6 @@ export const useWorkbenchStore = defineStore("workbench", {
       if (pendingRequestIds(this.jobs).length) {
         this.startResultPolling();
       }
-    },
-    async deleteImage(id: string) {
-      pendingDeletedImageIds.add(id);
-      const previousJobs = this.jobs;
-      this.jobs = this.jobs.flatMap((job) => {
-        const currentImages = job.images ?? [];
-        const images = currentImages.filter((image) => image.id !== id);
-        return images.length || !currentImages.some((image) => image.id === id)
-          ? [{ ...job, images, count: images.length || job.count }]
-          : [];
-      });
-
-      if (isMockId(id)) {
-        pendingDeletedImageIds.delete(id);
-        return;
-      }
-
-      api.delete<{ ok: boolean }>(`/api/images/${id}`)
-        .then(() => pendingDeletedImageIds.delete(id))
-        .catch(async (error) => {
-          pendingDeletedImageIds.delete(id);
-          this.jobs = previousJobs;
-          this.error = error instanceof Error ? error.message : "删除失败";
-          await this.loadHistory().catch(() => undefined);
-        });
     },
     async deleteJob(id: string) {
       pendingDeletedJobIds.add(id);
@@ -443,7 +402,6 @@ export const useWorkbenchStore = defineStore("workbench", {
       try {
         await api.delete<{ ok: boolean; deletedCount: number }>("/api/jobs");
         pendingDeletedJobIds.clear();
-        pendingDeletedImageIds.clear();
         pendingDeletedRequestIds.clear();
       } catch (error) {
         this.jobs = previousJobs;
@@ -457,18 +415,6 @@ export const useWorkbenchStore = defineStore("workbench", {
         }
         throw error;
       }
-    },
-    async loadTemplates() {
-      const data = await api.get<{ templates: PromptTemplate[] }>("/api/templates");
-      this.templates = data.templates;
-    },
-    async createTemplate(title: string, prompt: string, params: Record<string, unknown>) {
-      const data = await api.post<{ template: PromptTemplate }>("/api/templates", { title, prompt, params });
-      this.templates = [data.template, ...this.templates];
-    },
-    async deleteTemplate(id: string) {
-      await api.delete<{ ok: boolean }>(`/api/templates/${id}`);
-      this.templates = this.templates.filter((template) => template.id !== id);
     }
   }
 });

@@ -10,7 +10,8 @@ import org.springframework.scheduling.annotation.EnableScheduling;
         "com.feng.system.common.log.mapper",
         "com.feng.system.module.tool.mapper"
         ,"com.feng.system.module.image.mapper",
-        "com.feng.system.module.video.mapper"
+        "com.feng.system.module.video.mapper",
+        "com.feng.system.module.media.mapper"
 })
 @SpringBootApplication
 @EnableScheduling

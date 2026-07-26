@@ -1,17 +1,18 @@
 package com.feng.system.module.video;
 
-import com.feng.system.module.image.exception.ImageApiException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.feng.system.module.image.entity.AiModel;
+import com.feng.system.module.image.entity.ModelProvider;
 import com.feng.system.module.image.service.ImageModelConfigService;
 import com.feng.system.module.image.service.Sub2apiBillingService;
+import com.feng.system.module.media.entity.MediaBillingRecord;
+import com.feng.system.module.media.entity.MediaTask;
+import com.feng.system.module.media.mapper.MediaTaskMapper;
+import com.feng.system.module.media.service.MediaBillingRecordService;
+import com.feng.system.module.media.service.MediaTaskResultService;
 import com.feng.system.module.video.service.VideoGateway;
 import com.feng.system.module.video.service.VideoMaterialUploadService;
 import com.feng.system.module.video.service.VideoTaskPoller;
-
-import com.feng.system.module.image.entity.AiModel;
-import com.feng.system.module.image.entity.ModelProvider;
-import com.feng.system.module.video.entity.VideoGenerationJob;
-import com.feng.system.module.video.mapper.GeneratedVideoMapper;
-import com.feng.system.module.video.mapper.VideoGenerationJobMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.http.MediaType;
@@ -23,38 +24,52 @@ import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.Map;
 
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.*;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
 
 class VideoTaskPollerTest {
     @TempDir Path uploads;
 
     @Test
-    void storesUpstreamErrorPayloadBeforeRetrying() {
-        VideoGenerationJobMapper jobs = mock(VideoGenerationJobMapper.class);
+    void pendingTaskKeepsFirstUpstreamResponseOnly() {
+        MediaTaskMapper tasks = mock(MediaTaskMapper.class);
+        VideoGateway gateway = mock(VideoGateway.class);
+        when(gateway.query(anyString(), anyString(), anyString(), anyString())).thenReturn(
+                new VideoGateway.Task("upstream-1", "PENDING", 10, null, null, Map.of()));
+        VideoTaskPoller poller = poller(tasks, gateway, mock(Sub2apiBillingService.class),
+                mock(MediaBillingRecordService.class), configured("seedance-2.0"),
+                mock(VideoMaterialUploadService.class), mock(MediaTaskResultService.class));
+
+        poller.process(task("job-pending", 8));
+
+        verify(tasks).updateById(argThat(value -> "PENDING".equals(value.getStatus())
+                && "10".equals(String.valueOf(value.getProgress()))
+                && value.getUpstreamResponse().equals(firstUpstreamResponse())));
+    }
+
+    @Test
+    void pollingErrorKeepsFirstUpstreamResponseAndStoresLastErrorInTaskData() {
+        MediaTaskMapper tasks = mock(MediaTaskMapper.class);
         VideoGateway gateway = mock(VideoGateway.class);
         when(gateway.query(anyString(), anyString(), anyString(), anyString())).thenThrow(
-                new com.feng.system.module.image.exception.ImageApiException(502, "failed", null, Map.of("error", "poll rejected")));
-        ImageModelConfigService configs = mock(ImageModelConfigService.class);
-        AiModel model = new AiModel(); model.setGenerationPath("/v1/videos");
-        ModelProvider provider = new ModelProvider(); provider.setBaseUrl("https://api.example.com"); provider.setVideoApiKey("key");
-        when(configs.requireVideo(7L)).thenReturn(new ImageModelConfigService.RuntimeModel(model, provider));
-        VideoTaskPoller poller = new VideoTaskPoller(jobs, mock(GeneratedVideoMapper.class), gateway,
-                mock(Sub2apiBillingService.class), configs, mock(VideoMaterialUploadService.class));
-        VideoGenerationJob job = new VideoGenerationJob(); job.setId("job-error"); job.setModelConfigId(7L);
-        job.setUpstreamTaskId("task-error"); job.setPollErrorCount(0); job.setRawResponses("[]");
+                new com.feng.system.module.image.exception.ImageApiException(
+                        502, "failed", null, Map.of("error", "poll rejected")));
+        ImageModelConfigService configs = configured("seedance-2.0");
+        VideoTaskPoller poller = poller(tasks, gateway, mock(Sub2apiBillingService.class),
+                mock(MediaBillingRecordService.class), configs, mock(VideoMaterialUploadService.class),
+                mock(MediaTaskResultService.class));
+        MediaTask task = task("job-error", 10);
 
-        poller.process(job);
+        poller.process(task);
 
-        verify(jobs).updateById(argThat(value -> value.getRawResponses().contains("poll rejected")
-                && Integer.valueOf(1).equals(value.getPollErrorCount())));
+        verify(tasks).updateById(argThat(value -> value.getUpstreamResponse().equals(firstUpstreamResponse())
+                && value.getTaskData().contains("poll rejected")));
     }
 
     @Test
     void omniCompletionDownloadsLocallyBeforeSettling() throws Exception {
-        VideoGenerationJobMapper jobs = mock(VideoGenerationJobMapper.class);
-        GeneratedVideoMapper videos = mock(GeneratedVideoMapper.class);
+        MediaTaskMapper tasks = mock(MediaTaskMapper.class);
         VideoGateway gateway = mock(VideoGateway.class, invocation -> switch (invocation.getMethod().getName()) {
             case "query" -> new VideoGateway.Task("upstream-1", "COMPLETED", 100, null, null, Map.of());
             case "download" -> ResponseEntity.ok().contentType(MediaType.parseMediaType("video/mp4"))
@@ -62,91 +77,110 @@ class VideoTaskPollerTest {
             default -> RETURNS_DEFAULTS.answer(invocation);
         });
         Sub2apiBillingService billing = mock(Sub2apiBillingService.class);
-        ImageModelConfigService configs = mock(ImageModelConfigService.class);
+        MediaBillingRecordService mediaBilling = mock(MediaBillingRecordService.class);
+        when(mediaBilling.find("job-1")).thenReturn(reservation("job-1", BigDecimal.ZERO));
+        ImageModelConfigService configs = configured("omni-fast");
         VideoMaterialUploadService storage = new VideoMaterialUploadService(uploads.toString(), "https://media.example.com");
-        VideoTaskPoller poller = VideoTaskPoller.class.getConstructor(VideoGenerationJobMapper.class,
-                GeneratedVideoMapper.class, VideoGateway.class, Sub2apiBillingService.class,
-                ImageModelConfigService.class, VideoMaterialUploadService.class)
-                .newInstance(jobs, videos, gateway, billing, configs, storage);
-        AiModel model = new AiModel(); model.setId(7L); model.setModelKey("omni-fast");
-        model.setUpstreamModel("omni-fast"); model.setGenerationPath("/v1/videos");
-        ModelProvider provider = new ModelProvider(); provider.setBaseUrl("https://api.example.com"); provider.setVideoApiKey("secret");
-        when(configs.requireVideo(7L)).thenReturn(new ImageModelConfigService.RuntimeModel(model, provider));
+        MediaTaskResultService results = mock(MediaTaskResultService.class);
+        VideoTaskPoller poller = poller(tasks, gateway, billing, mediaBilling, configs, storage, results);
         when(billing.settleVideo(anyString(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString(), anyInt()))
                 .thenReturn("usage-1");
-        VideoGenerationJob job = new VideoGenerationJob(); job.setId("job-1"); job.setModelConfigId(7L);
-        job.setUpstreamTaskId("upstream-1"); job.setDuration(10); job.setBillingStatus("RESERVED");
-        job.setBillingAmount(BigDecimal.ZERO); job.setBillingApiKeyId("1"); job.setBillingUserId("2");
-        job.setBillingAccountId("3"); job.setCreatedAt(LocalDateTime.now().minusSeconds(10));
+        MediaTask task = task("job-1", 10);
+        task.setTaskData("{\"duration\":10,\"model\":\"omni-fast\"}");
 
-        poller.process(job);
+        poller.process(task);
 
-        verify(videos).insert(argThat(video -> video.getPublicUrl().equals(
-                "https://media.example.com/uploads/generated-videos/job-1.mp4")));
+        verify(results).saveIfAbsent(eq("job-1"), eq(0),
+                eq("https://media.example.com/uploads/generated-videos/job-1.mp4"), anyMap());
         assertTrue(Files.exists(uploads.resolve("generated-videos/job-1.mp4")));
         verify(billing).settleVideo(anyString(), anyString(), anyString(), anyString(), any(),
                 eq("omni-fast"), eq("omni-fast"), eq("/v1/videos"), eq(10));
+        verify(mediaBilling).charged("job-1", "usage-1");
     }
 
     @Test
     void completedTaskStoresUrlAndSettlesRequestedDuration() {
-        VideoGenerationJobMapper jobs = mock(VideoGenerationJobMapper.class);
-        GeneratedVideoMapper videos = mock(GeneratedVideoMapper.class);
+        MediaTaskMapper tasks = mock(MediaTaskMapper.class);
         VideoGateway gateway = mock(VideoGateway.class);
         Sub2apiBillingService billing = mock(Sub2apiBillingService.class);
-        ImageModelConfigService configs = mock(ImageModelConfigService.class);
-        VideoTaskPoller poller = new VideoTaskPoller(jobs, videos, gateway, billing, configs,
-                mock(VideoMaterialUploadService.class));
-
-        AiModel model = new AiModel();
-        model.setId(7L); model.setModelKey("seedance-2.0"); model.setUpstreamModel("seedance-2.0");
-        model.setGenerationPath("/v1/videos");
-        ModelProvider provider = new ModelProvider();
-        provider.setBaseUrl("https://api.example.com"); provider.setVideoApiKey("secret");
-        when(configs.requireVideo(7L)).thenReturn(new ImageModelConfigService.RuntimeModel(model, provider));
+        MediaBillingRecordService mediaBilling = mock(MediaBillingRecordService.class);
+        MediaTaskResultService results = mock(MediaTaskResultService.class);
+        ImageModelConfigService configs = configured("seedance-2.0");
+        VideoTaskPoller poller = poller(tasks, gateway, billing, mediaBilling, configs,
+                mock(VideoMaterialUploadService.class), results);
         when(gateway.query(anyString(), anyString(), anyString(), anyString())).thenReturn(
-                new VideoGateway.Task("upstream-1", "COMPLETED", 100, "https://example.com/video.mp4", null, Map.of("status", "completed")));
+                new VideoGateway.Task("upstream-1", "COMPLETED", 100,
+                        "https://example.com/video.mp4", null, Map.of("status", "completed")));
+        when(mediaBilling.find("job-1")).thenReturn(reservation("job-1", new BigDecimal("2")));
         when(billing.settleVideo(anyString(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString(), anyInt()))
                 .thenReturn("usage-1");
+        MediaTask task = task("job-1", 8);
 
-        VideoGenerationJob job = new VideoGenerationJob();
-        job.setId("job-1"); job.setModelConfigId(7L); job.setUpstreamTaskId("upstream-1");
-        job.setDuration(8); job.setBillingStatus("RESERVED"); job.setBillingAmount(new BigDecimal("2"));
-        job.setBillingApiKeyId("1"); job.setBillingUserId("2"); job.setBillingAccountId("3");
-        job.setCreatedAt(LocalDateTime.now().minusSeconds(10));
+        poller.process(task);
 
-        poller.process(job);
-
-        verify(videos).insert(any());
+        verify(results).saveIfAbsent(eq("job-1"), eq(0), eq("https://example.com/video.mp4"), anyMap());
         verify(billing).settleVideo("job-1", "1", "2", "3", new BigDecimal("2"),
                 "seedance-2.0", "seedance-2.0", "/v1/videos", 8);
-        verify(jobs).updateById(argThat(value -> "SUCCEEDED".equals(value.getStatus())
-                && "CHARGED".equals(value.getBillingStatus()) && value.getRawResponses().contains("completed")));
+        verify(tasks).updateById(argThat(value -> "SUCCEEDED".equals(value.getStatus())
+                && "CHARGED".equals(value.getBillingStatus())
+                && value.getUpstreamResponse().equals(firstUpstreamResponse())));
     }
 
     @Test
     void completedTaskWithoutResultUrlFailsAndReleasesReservation() {
-        VideoGenerationJobMapper jobs = mock(VideoGenerationJobMapper.class);
-        GeneratedVideoMapper videos = mock(GeneratedVideoMapper.class);
+        MediaTaskMapper tasks = mock(MediaTaskMapper.class);
         VideoGateway gateway = mock(VideoGateway.class);
         Sub2apiBillingService billing = mock(Sub2apiBillingService.class);
-        ImageModelConfigService configs = mock(ImageModelConfigService.class);
-        VideoTaskPoller poller = new VideoTaskPoller(jobs, videos, gateway, billing, configs,
-                mock(VideoMaterialUploadService.class));
-        AiModel model = new AiModel(); model.setGenerationPath("/v1/video");
-        ModelProvider provider = new ModelProvider(); provider.setBaseUrl("https://api.example.com"); provider.setVideoApiKey("secret");
-        when(configs.requireVideo(7L)).thenReturn(new ImageModelConfigService.RuntimeModel(model, provider));
+        MediaBillingRecordService mediaBilling = mock(MediaBillingRecordService.class);
+        ImageModelConfigService configs = configured("seedance-2.0");
+        VideoTaskPoller poller = poller(tasks, gateway, billing, mediaBilling, configs,
+                mock(VideoMaterialUploadService.class), mock(MediaTaskResultService.class));
         when(gateway.query(anyString(), anyString(), anyString(), anyString()))
                 .thenReturn(new VideoGateway.Task("task", "COMPLETED", 100, null, null, Map.of()));
-        VideoGenerationJob job = new VideoGenerationJob();
-        job.setId("job-2"); job.setModelConfigId(7L); job.setUpstreamTaskId("task"); job.setDuration(6);
-        job.setBillingStatus("RESERVED"); job.setBillingAmount(BigDecimal.ONE); job.setBillingApiKeyId("1");
-        job.setBillingUserId("2"); job.setBillingAccountId("3"); job.setCreatedAt(LocalDateTime.now().minusSeconds(5));
+        when(mediaBilling.find("job-2")).thenReturn(reservation("job-2", BigDecimal.ONE));
+        MediaTask task = task("job-2", 6);
 
-        poller.process(job);
+        poller.process(task);
 
         verify(billing).releaseVideo("job-2", "1", "2", BigDecimal.ONE);
-        verify(jobs).updateById(argThat(value -> "FAILED".equals(value.getStatus())
+        verify(mediaBilling).released("job-2");
+        verify(tasks).updateById(argThat(value -> "FAILED".equals(value.getStatus())
                 && "RELEASED".equals(value.getBillingStatus())));
+    }
+
+    private VideoTaskPoller poller(MediaTaskMapper tasks, VideoGateway gateway, Sub2apiBillingService billing,
+                                   MediaBillingRecordService mediaBilling, ImageModelConfigService configs,
+                                   VideoMaterialUploadService storage, MediaTaskResultService results) {
+        return new VideoTaskPoller(tasks, gateway, billing, mediaBilling, configs, storage, results, new ObjectMapper());
+    }
+
+    private ImageModelConfigService configured(String modelKey) {
+        ImageModelConfigService configs = mock(ImageModelConfigService.class);
+        AiModel model = new AiModel();
+        model.setId(7L); model.setModelKey(modelKey); model.setUpstreamModel(modelKey); model.setGenerationPath("/v1/videos");
+        ModelProvider provider = new ModelProvider();
+        provider.setBaseUrl("https://api.example.com"); provider.setVideoApiKey("secret");
+        when(configs.requireVideo(7L)).thenReturn(new ImageModelConfigService.RuntimeModel(model, provider));
+        return configs;
+    }
+
+    private MediaTask task(String id, int duration) {
+        MediaTask task = new MediaTask();
+        task.setId(id); task.setTaskType("VIDEO"); task.setModelConfigId(7L); task.setUpstreamTaskId("upstream-1");
+        task.setTaskData("{\"duration\":" + duration + ",\"model\":\"seedance-2.0\"}");
+        task.setUpstreamResponse(firstUpstreamResponse()); task.setStatus("PENDING");
+        task.setCreatedAt(LocalDateTime.now().minusSeconds(10));
+        return task;
+    }
+
+    private String firstUpstreamResponse() {
+        return "{\"id\":\"upstream-1\",\"status\":\"queued\"}";
+    }
+
+    private MediaBillingRecord reservation(String taskId, BigDecimal fee) {
+        MediaBillingRecord record = new MediaBillingRecord();
+        record.setTaskId(taskId); record.setTaskFee(fee); record.setDeductionStatus("RESERVED");
+        record.setApiKeyId("1"); record.setUserId("2"); record.setAccountId("3");
+        return record;
     }
 }

@@ -6,8 +6,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.feng.system.module.image.entity.AiModel;
 import com.feng.system.module.image.entity.ModelProvider;
 import com.feng.system.module.image.mapper.AiModelMapper;
-import com.feng.system.module.image.mapper.GenerationJobMapper;
 import com.feng.system.module.image.mapper.ModelProviderMapper;
+import com.feng.system.module.media.mapper.MediaTaskMapper;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -28,7 +28,7 @@ class ImageModelConfigServiceTest {
     void publicModelsExposeConfiguredUnitPriceBeforeProviderKeyIsConfigured() {
         ModelProviderMapper providers = mock(ModelProviderMapper.class);
         AiModelMapper models = mock(AiModelMapper.class);
-        GenerationJobMapper jobs = mock(GenerationJobMapper.class);
+        MediaTaskMapper jobs = mock(MediaTaskMapper.class);
         ImageModelConfigService service = new ImageModelConfigService(providers, models, jobs, new ObjectMapper());
 
         ModelProvider provider = new ModelProvider();
@@ -61,7 +61,7 @@ class ImageModelConfigServiceTest {
     void publicVideosExposeBillingModeAndDocumentCapabilities() {
         ModelProviderMapper providers = mock(ModelProviderMapper.class);
         AiModelMapper models = mock(AiModelMapper.class);
-        GenerationJobMapper jobs = mock(GenerationJobMapper.class);
+        MediaTaskMapper jobs = mock(MediaTaskMapper.class);
         ImageModelConfigService service = new ImageModelConfigService(providers, models, jobs, new ObjectMapper());
 
         ModelProvider provider = new ModelProvider();
@@ -99,7 +99,7 @@ class ImageModelConfigServiceTest {
         ModelProviderMapper providers = mock(ModelProviderMapper.class);
         AiModelMapper models = mock(AiModelMapper.class);
         ImageModelConfigService service = new ImageModelConfigService(providers, models,
-                mock(GenerationJobMapper.class), new ObjectMapper());
+                mock(MediaTaskMapper.class), new ObjectMapper());
         ModelProvider provider = new ModelProvider(); provider.setId(1L);
         when(providers.selectById(1L)).thenReturn(provider);
         AiModel model = new AiModel(); model.setProviderId(1L); model.setModelKey("grok-video");
@@ -118,7 +118,7 @@ class ImageModelConfigServiceTest {
         ModelProviderMapper providers = mock(ModelProviderMapper.class);
         AiModelMapper models = mock(AiModelMapper.class);
         ImageModelConfigService service = new ImageModelConfigService(providers, models,
-                mock(GenerationJobMapper.class), new ObjectMapper());
+                mock(MediaTaskMapper.class), new ObjectMapper());
         ModelProvider provider = new ModelProvider(); provider.setId(1L);
         when(providers.selectById(1L)).thenReturn(provider);
 

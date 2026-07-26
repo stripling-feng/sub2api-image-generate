@@ -39,15 +39,6 @@ export type GenerationJob = {
   images: GeneratedImage[];
 };
 
-export type PromptTemplate = {
-  id: string;
-  title: string;
-  prompt: string;
-  params: Record<string, unknown>;
-  createdAt: string;
-  updatedAt: string;
-};
-
 export type ImageModelParameter = {
   key: string;
   label: string;

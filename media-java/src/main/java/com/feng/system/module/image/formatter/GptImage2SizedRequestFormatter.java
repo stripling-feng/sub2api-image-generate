@@ -16,9 +16,13 @@ public class GptImage2SizedRequestFormatter implements ImageGenerateRequestForma
 
     @Override
     public Map<String, Object> format(ImageGenerateRequest request) {
-        Map<String, Object> value = new LinkedHashMap<>(request.suppliedParameters());
-        put(value, "aspect_ratio", request.getAspectRatio());
+        Map<String, Object> value = new LinkedHashMap<>();
+        put(value, "model", request.getModel());
+        put(value, "prompt", request.getPrompt());
+        put(value, "async", request.getAsync());
+        put(value, "images", request.getImages());
         put(value, "size", request.getSize());
+        put(value, "aspect_ratio", request.getAspectRatio());
         put(value, "quality", request.getQuality());
         return value;
     }

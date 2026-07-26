@@ -28,10 +28,15 @@ import java.util.Base64;
 import java.util.HexFormat;
 import java.util.UUID;
 
+/**
+ * 图片工作台会话服务:负责绑定用户的 sub2api 地址与 API Key、
+ * 基于 HttpOnly Cookie 维护登录会话,并支持通过请求头直接携带 API Key 的免会话模式。
+ */
 @Service
 @RequiredArgsConstructor
 public class ImageSessionService {
 
+    /** 会话 Cookie 名称 */
     public static final String COOKIE = "sub2api_session";
     private final ApiProfileMapper profileMapper;
     private final ApiSessionMapper sessionMapper;
@@ -41,11 +46,22 @@ public class ImageSessionService {
     @Value("${image.session-days:30}") private long sessionDays;
     @Value("${image.cookie-secure:false}") private boolean cookieSecure;
 
+    /**
+     * 绑定 sub2api 配置:校验 baseUrl 与 API Key 合法性后,按 Key 哈希创建或更新档案,
+     * 并为客户端下发新的会话 Cookie。
+     *
+     * @param baseUrl  sub2api 服务地址(必须为公网 HTTPS)
+     * @param apiKey   sub2api API Key(明文,存储时仅做哈希索引)
+     * @param response 用于写入会话 Cookie 的响应对象
+     * @return 绑定后的档案及账户余额信息
+     */
     @Transactional
     public BoundProfile bind(String baseUrl, String apiKey, HttpServletResponse response) {
         validateBind(baseUrl, apiKey);
+        // 先到 sub2api 数据库校验 Key 是否有效并取余额
         Sub2apiBillingService.BillingAccount account = billing.validateApiKey(apiKey);
         String keyHash = hash(apiKey);
+        // 以 Key 的 SHA-256 哈希作为唯一索引,同一 Key 复用同一份档案
         ApiProfile profile = profileMapper.selectOne(new LambdaQueryWrapper<ApiProfile>().eq(ApiProfile::getKeyHash, keyHash));
         LocalDateTime now = ImageTime.now();
         if (profile == null) {
@@ -62,21 +78,34 @@ public class ImageSessionService {
         return new BoundProfile(profile, account.balanceUsd(), account.availableBalanceUsd());
     }
 
+    /**
+     * 获取当前请求对应的档案,未绑定时抛出 401 异常。
+     */
     public ApiProfile requireProfile(HttpServletRequest request, HttpServletResponse response) {
         ApiProfile profile = resolveProfile(request, response);
         if (profile == null) throw new ImageApiException(401, "Not bound. Enter your sub2api URL and API Key first.");
         return profile;
     }
 
+    /**
+     * 解析当前请求的档案:优先使用 X-API-Key 请求头(直连模式,每次实时校验 Key),
+     * 否则回退到会话 Cookie;会话不存在或已过期时返回 null 并清理 Cookie。
+     */
     public ApiProfile resolveProfile(HttpServletRequest request, HttpServletResponse response) {
+        // 直连模式:请求头携带 API Key,无需 Cookie 会话
         String apiKey = request.getHeader("X-API-Key");
         if (apiKey != null && !apiKey.isBlank()) {
-            return profileMapper.selectOne(new LambdaQueryWrapper<ApiProfile>().eq(ApiProfile::getKeyHash, hash(apiKey)));
+            String normalized = apiKey.trim();
+            if (normalized.length() < 8) throw new ImageApiException(401, "Invalid API Key.");
+            billing.validateApiKey(normalized);
+            return directProfile(normalized);
         }
+        // 会话模式:按 Cookie 中令牌的哈希查找会话
         String token = cookie(request);
         if (token == null) return null;
         ApiSession session = sessionMapper.selectOne(new LambdaQueryWrapper<ApiSession>().eq(ApiSession::getTokenHash, hash(token)));
         if (session == null || session.getExpiresAt().isBefore(ImageTime.now())) {
+            // 会话过期:删除记录并让客户端 Cookie 失效
             if (session != null) sessionMapper.deleteById(session.getId());
             clearCookie(response);
             return null;
@@ -84,6 +113,18 @@ public class ImageSessionService {
         return profileMapper.selectById(session.getProfileId());
     }
 
+    private ApiProfile directProfile(String apiKey) {
+        String keyHash = hash(apiKey);
+        ApiProfile profile = new ApiProfile();
+        profile.setId("direct-" + keyHash.substring(0, 32));
+        profile.setKeyHash(keyHash);
+        profile.setEncryptedKey(apiKey);
+        return profile;
+    }
+
+    /**
+     * 退出登录:删除当前会话记录并清除客户端 Cookie。
+     */
     public void logout(HttpServletRequest request, HttpServletResponse response) {
         String token = cookie(request);
         if (token != null) sessionMapper.delete(new LambdaQueryWrapper<ApiSession>().eq(ApiSession::getTokenHash, hash(token)));
@@ -91,6 +132,7 @@ public class ImageSessionService {
     }
 
     private void createSession(String profileId, HttpServletResponse response) {
+        // 生成 36 字节随机令牌;数据库仅保存其哈希,明文只下发给客户端
         byte[] bytes = new byte[36];
         random.nextBytes(bytes);
         String token = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
@@ -120,6 +162,7 @@ public class ImageSessionService {
     }
 
     private void validateBind(String baseUrl, String apiKey) {
+        // 校验 baseUrl 必须是公网 HTTPS,防止 SSRF 指向内网地址
         SafeUpstreamUrl.requirePublicHttps(baseUrl);
         if (apiKey == null || apiKey.length() < 8) throw new ImageApiException(422, "Invalid request.");
     }
@@ -137,5 +180,6 @@ public class ImageSessionService {
         }
     }
 
+    /** 绑定结果:档案 + 账户余额(美元)与可用余额(扣除冻结部分) */
     public record BoundProfile(ApiProfile profile, String balanceUsd, String availableBalanceUsd) {}
 }

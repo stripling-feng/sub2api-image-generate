@@ -667,6 +667,7 @@ select:disabled {
 }
 
 .prompt-panel {
+  position: relative;
   flex: 0 0 auto;
   margin-top: 12px;
   padding: 14px;
@@ -680,6 +681,50 @@ select:disabled {
 .prompt-panel.is-reference-dragging {
   border-color: var(--accent);
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent), transparent 84%);
+}
+
+.prompt-panel.is-reference-importing {
+  border-color: color-mix(in srgb, var(--accent), var(--line) 30%);
+}
+
+.reference-import-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel), transparent 14%);
+  backdrop-filter: blur(5px);
+}
+
+.reference-import-card {
+  width: min(220px, 100%);
+  min-height: 112px;
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: 8px;
+  padding: 18px;
+  border: 1px solid color-mix(in srgb, var(--accent), var(--line) 42%);
+  border-radius: 8px;
+  background: var(--panel-strong);
+  color: var(--text);
+  box-shadow: 0 18px 48px color-mix(in srgb, var(--shadow), transparent 28%);
+}
+
+.reference-import-card strong {
+  font-size: 13px;
+  font-weight: 900;
+  line-height: 1.25;
+}
+
+.reference-import-card span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.25;
 }
 
 .composer-actions {

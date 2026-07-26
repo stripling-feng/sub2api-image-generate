@@ -46,7 +46,7 @@ public class SystemConfigServiceImpl implements SystemConfigService {
         register(new ConfigDefinition("security.login-fail-max-attempts", "登录失败限制次数", "5", "security", "超出后触发锁定"));
         register(new ConfigDefinition("security.login-fail-window-minutes", "登录失败统计时间", "5", "security", "失败次数统计窗口"));
         register(new ConfigDefinition("security.login-fail-lock-minutes", "登录锁定时间", "5", "security", "达到阈值后的锁定时长"));
-        register(new ConfigDefinition("upload.provider", "上传存储方式", "server", "upload", "server/minio/aliyun-oss"));
+        register(new ConfigDefinition("upload.provider", "上传存储方式", "server", "upload", "server/minio/aliyun-oss/cloudflare-r2"));
         register(new ConfigDefinition("upload.server.base-path", "服务器存储目录", "uploads", "upload", "相对于后端工作目录的存储路径"));
         register(new ConfigDefinition("upload.server.base-url", "服务器访问前缀", "", "upload", "本地文件访问前缀"));
         register(new ConfigDefinition("upload.oss.endpoint", "阿里云OSS Endpoint", "", "upload", "例如 oss-cn-hangzhou.aliyuncs.com"));
@@ -59,6 +59,11 @@ public class SystemConfigServiceImpl implements SystemConfigService {
         register(new ConfigDefinition("upload.minio.access-key", "MinIO AccessKey", "", "upload", "MinIO访问账号"));
         register(new ConfigDefinition("upload.minio.secret-key", "MinIO SecretKey", "", "upload", "MinIO访问密钥"));
         register(new ConfigDefinition("upload.minio.domain", "MinIO 自定义域名", "", "upload", "可选"));
+        register(new ConfigDefinition("upload.r2.endpoint", "Cloudflare R2 Endpoint", "", "upload", "https://<account-id>.r2.cloudflarestorage.com"));
+        register(new ConfigDefinition("upload.r2.bucket", "Cloudflare R2 Bucket", "", "upload", "R2 Bucket"));
+        register(new ConfigDefinition("upload.r2.access-key-id", "Cloudflare R2 AccessKeyId", "", "upload", "R2 S3 Access Key ID"));
+        register(new ConfigDefinition("upload.r2.access-key-secret", "Cloudflare R2 AccessKeySecret", "", "upload", "R2 S3 Secret Access Key"));
+        register(new ConfigDefinition("upload.r2.domain", "Cloudflare R2 Domain", "", "upload", "Optional public domain"));
     }
 
     @Override
@@ -84,6 +89,11 @@ public class SystemConfigServiceImpl implements SystemConfigService {
         vo.setUploadMinioAccessKey(values.get("upload.minio.access-key"));
         vo.setUploadMinioSecretKey(values.get("upload.minio.secret-key"));
         vo.setUploadMinioDomain(values.get("upload.minio.domain"));
+        vo.setUploadR2Endpoint(values.get("upload.r2.endpoint"));
+        vo.setUploadR2Bucket(values.get("upload.r2.bucket"));
+        vo.setUploadR2AccessKeyId(values.get("upload.r2.access-key-id"));
+        vo.setUploadR2AccessKeySecret(values.get("upload.r2.access-key-secret"));
+        vo.setUploadR2Domain(values.get("upload.r2.domain"));
         return vo;
     }
 
@@ -125,6 +135,11 @@ public class SystemConfigServiceImpl implements SystemConfigService {
         persist("upload.minio.access-key", safe(dto.getUploadMinioAccessKey()), existing);
         persist("upload.minio.secret-key", safe(dto.getUploadMinioSecretKey()), existing);
         persist("upload.minio.domain", safe(dto.getUploadMinioDomain()), existing);
+        persist("upload.r2.endpoint", safe(dto.getUploadR2Endpoint()), existing);
+        persist("upload.r2.bucket", safe(dto.getUploadR2Bucket()), existing);
+        persist("upload.r2.access-key-id", safe(dto.getUploadR2AccessKeyId()), existing);
+        persist("upload.r2.access-key-secret", safe(dto.getUploadR2AccessKeySecret()), existing);
+        persist("upload.r2.domain", safe(dto.getUploadR2Domain()), existing);
         refreshCache();
     }
 
@@ -247,6 +262,14 @@ public class SystemConfigServiceImpl implements SystemConfigService {
                         !StringUtils.hasText(dto.getUploadMinioAccessKey()) ||
                         !StringUtils.hasText(dto.getUploadMinioSecretKey())) {
                     throw new BusinessException("MinIO配置不完整");
+                }
+            }
+            case "cloudflare-r2" -> {
+                if (!StringUtils.hasText(dto.getUploadR2Endpoint()) ||
+                        !StringUtils.hasText(dto.getUploadR2Bucket()) ||
+                        !StringUtils.hasText(dto.getUploadR2AccessKeyId()) ||
+                        !StringUtils.hasText(dto.getUploadR2AccessKeySecret())) {
+                    throw new BusinessException("Cloudflare R2 config is incomplete");
                 }
             }
             default -> throw new BusinessException("不支持的上传存储方式");

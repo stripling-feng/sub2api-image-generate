@@ -10,9 +10,9 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -56,5 +56,23 @@ class UploadFileServiceImplTest {
         assertEquals(existingFile.getMd5Value(), result.getMd5Value());
         verify(uploadFileMapper, never()).insert(any());
         verify(systemConfigService, never()).getUploadProvider();
+    }
+
+    @Test
+    void objectUrlShouldUseDomainPathWithoutAddingBucket() {
+        String value = ReflectionTestUtils.invokeMethod(uploadFileService, "buildObjectUrl",
+                "https://media.tcboys.de", "https://account.r2.cloudflarestorage.com", "media",
+                "material/20260726/a.png");
+
+        assertEquals("https://media.tcboys.de/material/20260726/a.png", value);
+    }
+
+    @Test
+    void objectUrlShouldKeepBucketOnlyWhenDomainAlreadyContainsIt() {
+        String value = ReflectionTestUtils.invokeMethod(uploadFileService, "buildObjectUrl",
+                "https://media.tcboys.de/media", "https://account.r2.cloudflarestorage.com/media", "media",
+                "material/20260726/a.png");
+
+        assertEquals("https://media.tcboys.de/media/material/20260726/a.png", value);
     }
 }

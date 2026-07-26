@@ -8,7 +8,7 @@ import org.springframework.stereotype.Component;
 @Component
 @RequiredArgsConstructor
 public class SchemaGuard {
-    private static final int REQUIRED_VERSION = 13;
+    private static final int REQUIRED_VERSION = 16;
     private final JdbcTemplate jdbcTemplate;
 
     @PostConstruct

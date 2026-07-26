@@ -40,8 +40,15 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 import java.util.Set;
 import java.util.UUID;
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.core.sync.RequestBody;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.S3Configuration;
 
 @Service
 @RequiredArgsConstructor
@@ -51,7 +58,7 @@ public class UploadFileServiceImpl implements UploadFileService {
             "jpg", "jpeg", "png", "gif", "bmp", "webp", "svg", "ico",
             "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
             "txt", "csv", "zip", "rar", "7z",
-            "mp3", "mp4", "avi", "mov", "wmv", "flv", "webm",
+            "mp3", "mp4", "avi", "mov", "wmv", "flv", "webm", "m4v", "wav", "m4a", "aac",
             "html", "css", "js", "json", "xml", "yml", "yaml", "md"
     );
 
@@ -63,6 +70,9 @@ public class UploadFileServiceImpl implements UploadFileService {
 
     private volatile OSS cachedOssClient;
     private volatile String cachedOssKey;
+
+    private volatile S3Client cachedR2Client;
+    private volatile String cachedR2Key;
 
     @Override
     public PageResult<UploadFileVO> page(UploadFileQueryDTO queryDTO) {
@@ -83,6 +93,15 @@ public class UploadFileServiceImpl implements UploadFileService {
 
     @Override
     public UploadFileVO upload(MultipartFile file) {
+        return upload(file, null, true);
+    }
+
+    @Override
+    public UploadFileVO upload(MultipartFile file, String directory) {
+        return upload(file, directory, false);
+    }
+
+    private UploadFileVO upload(MultipartFile file, String directory, boolean reuseByMd5) {
         if (file == null || file.isEmpty()) {
             throw new BusinessException("上传文件不能为空");
         }
@@ -98,7 +117,7 @@ public class UploadFileServiceImpl implements UploadFileService {
             try (InputStream is = file.getInputStream()) {
                 md5Value = DigestUtils.md5DigestAsHex(is);
             }
-            SysUploadFile existingFile = findByMd5(md5Value);
+            SysUploadFile existingFile = reuseByMd5 ? findByMd5(md5Value) : null;
             if (existingFile != null) {
                 return toVO(existingFile);
             }
@@ -107,14 +126,15 @@ public class UploadFileServiceImpl implements UploadFileService {
             if (StringUtils.hasText(extension)) {
                 currentName = currentName + "." + extension;
             }
-            String objectKey = buildObjectKey(currentName);
+            String objectKey = buildObjectKey(currentName, directory);
             String provider = systemConfigService.getUploadProvider();
 
             // Pass InputStream directly to storage -- no byte[] intermediate
             StoredFileResult storedFile = switch (provider) {
-                case "server" -> storeOnServer(file.getInputStream(), currentName);
+                case "server" -> storeOnServer(file.getInputStream(), objectKey);
                 case "minio" -> storeOnMinio(file.getInputStream(), objectKey, file.getContentType(), file.getSize());
                 case "aliyun-oss" -> storeOnOss(file.getInputStream(), objectKey, file.getContentType());
+                case "cloudflare-r2" -> storeOnR2(file, objectKey, file.getContentType());
                 default -> throw new BusinessException("不支持的上传存储方式: " + provider);
             };
 
@@ -214,15 +234,51 @@ public class UploadFileServiceImpl implements UploadFileService {
         }
     }
 
-    private StoredFileResult storeOnServer(InputStream inputStream, String currentName) {
-        Path uploadDir = Path.of(System.getProperty("user.dir"), systemConfigService.getUploadServerBasePath());
-        Path targetPath = uploadDir.resolve(currentName);
+    private S3Client getR2Client() {
+        String endpoint = requiredConfig("upload.r2.endpoint", "Cloudflare R2 Endpoint");
+        String bucket = systemConfigService.getConfigValue("upload.r2.bucket");
+        String accessKeyId = requiredConfig("upload.r2.access-key-id", "Cloudflare R2 AccessKeyId");
+        String accessKeySecret = requiredConfig("upload.r2.access-key-secret", "Cloudflare R2 AccessKeySecret");
+        String apiEndpoint = r2ApiEndpoint(endpoint, bucket);
+        String key = apiEndpoint + "|" + accessKeyId;
+
+        if (cachedR2Client != null && key.equals(cachedR2Key)) {
+            return cachedR2Client;
+        }
+        synchronized (this) {
+            if (cachedR2Client != null && key.equals(cachedR2Key)) {
+                return cachedR2Client;
+            }
+            if (cachedR2Client != null) {
+                cachedR2Client.close();
+            }
+            cachedR2Client = S3Client.builder()
+                    .endpointOverride(URI.create(apiEndpoint))
+                    .credentialsProvider(StaticCredentialsProvider.create(
+                            AwsBasicCredentials.create(accessKeyId, accessKeySecret)))
+                    .region(Region.of("auto"))
+                    .serviceConfiguration(S3Configuration.builder()
+                            .pathStyleAccessEnabled(true)
+                            .chunkedEncodingEnabled(false)
+                            .build())
+                    .build();
+            cachedR2Key = key;
+            return cachedR2Client;
+        }
+    }
+
+    private StoredFileResult storeOnServer(InputStream inputStream, String objectKey) {
+        Path uploadDir = Path.of(System.getProperty("user.dir"), systemConfigService.getUploadServerBasePath()).normalize();
+        Path targetPath = uploadDir.resolve(objectKey).normalize();
+        if (!targetPath.startsWith(uploadDir)) {
+            throw new BusinessException("Invalid file path");
+        }
         try {
-            Files.createDirectories(uploadDir);
+            Files.createDirectories(targetPath.getParent());
             Files.copy(inputStream, targetPath, StandardCopyOption.REPLACE_EXISTING);
             String baseUrl = systemConfigService.getConfigValue("upload.server.base-url");
             if (StringUtils.hasText(baseUrl)) {
-                return new StoredFileResult(trimTrailingSlash(normalizeServerBaseUrl(baseUrl)) + "/" + currentName);
+                return new StoredFileResult(trimTrailingSlash(normalizeServerBaseUrl(baseUrl)) + "/" + objectKey.replace('\\', '/'));
             }
             return new StoredFileResult(targetPath.toString());
         } catch (IOException ex) {
@@ -272,6 +328,24 @@ public class UploadFileServiceImpl implements UploadFileService {
         }
     }
 
+    private StoredFileResult storeOnR2(MultipartFile file, String objectKey, String contentType) throws IOException {
+        String endpoint = requiredConfig("upload.r2.endpoint", "Cloudflare R2 Endpoint");
+        String bucket = requiredConfig("upload.r2.bucket", "Cloudflare R2 Bucket");
+        String domain = systemConfigService.getConfigValue("upload.r2.domain");
+
+        try {
+            getR2Client().putObject(software.amazon.awssdk.services.s3.model.PutObjectRequest.builder()
+                            .bucket(bucket)
+                            .key(objectKey)
+                            .contentType(StringUtils.hasText(contentType) ? contentType : "application/octet-stream")
+                            .build(),
+                    RequestBody.fromBytes(file.getBytes()));
+            return new StoredFileResult(buildObjectUrl(domain, endpoint, bucket, objectKey));
+        } catch (Exception ex) {
+            throw new BusinessException("Cloudflare R2 upload failed: " + ex.getMessage());
+        }
+    }
+
     private String requiredConfig(String key, String label) {
         String value = systemConfigService.getConfigValue(key);
         if (!StringUtils.hasText(value)) {
@@ -280,16 +354,39 @@ public class UploadFileServiceImpl implements UploadFileService {
         return value.trim();
     }
 
-    private String buildObjectKey(String currentName) {
+    private String buildObjectKey(String currentName, String directory) {
+        String customDirectory = normalizeDirectory(directory);
+        if (StringUtils.hasText(customDirectory)) {
+            return customDirectory + "/" + currentName;
+        }
         LocalDate today = LocalDate.now();
-        return today.getYear() + "/" + today.getMonthValue() + "/" + today.getDayOfMonth() + "/" + currentName;
+        return today.format(DateTimeFormatter.BASIC_ISO_DATE) + "/" + currentName;
+    }
+
+    private String normalizeDirectory(String directory) {
+        if (!StringUtils.hasText(directory)) return "";
+        String normalized = directory.trim().replace('\\', '/');
+        while (normalized.startsWith("/")) normalized = normalized.substring(1);
+        while (normalized.endsWith("/")) normalized = normalized.substring(0, normalized.length() - 1);
+        if (normalized.contains("..")) {
+            throw new BusinessException("Invalid file path");
+        }
+        return normalized;
     }
 
     private String buildObjectUrl(String domain, String endpoint, String bucket, String objectKey) {
         if (StringUtils.hasText(domain)) {
             return trimTrailingSlash(normalizeHttpEndpoint(domain)) + "/" + objectKey;
         }
-        return trimTrailingSlash(normalizeHttpEndpoint(endpoint)) + "/" + bucket + "/" + objectKey;
+        return trimTrailingSlash(normalizeHttpEndpoint(endpoint)) + "/" + objectKey;
+    }
+
+    private String r2ApiEndpoint(String endpoint, String bucket) {
+        String normalized = trimTrailingSlash(normalizeHttpEndpoint(endpoint));
+        if (StringUtils.hasText(bucket) && normalized.endsWith("/" + bucket)) {
+            return normalized.substring(0, normalized.length() - bucket.length() - 1);
+        }
+        return normalized;
     }
 
     private MediaType resolveMediaType(SysUploadFile uploadFile, Path path) throws IOException {

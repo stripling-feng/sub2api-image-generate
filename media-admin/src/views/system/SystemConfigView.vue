@@ -235,7 +235,7 @@
                   </el-form-item>
                 </div>
 
-                <div v-else class="field-grid">
+                <div v-else-if="form.uploadProvider === 'aliyun-oss'" class="field-grid">
                   <el-form-item class="field-card" prop="uploadOssEndpoint">
                     <template #label
                       ><span class="field-label">OSS Endpoint</span></template
@@ -288,6 +288,49 @@
                     />
                   </el-form-item>
                 </div>
+
+                <div v-else-if="form.uploadProvider === 'cloudflare-r2'" class="field-grid">
+                  <el-form-item class="field-card full" prop="uploadR2Endpoint">
+                    <template #label>
+                      <span class="field-label">R2 Endpoint</span>
+                    </template>
+                    <el-input
+                      v-model="form.uploadR2Endpoint"
+                      placeholder="https://<account-id>.r2.cloudflarestorage.com"
+                    />
+                  </el-form-item>
+                  <el-form-item class="field-card" prop="uploadR2Bucket">
+                    <template #label>
+                      <span class="field-label">Bucket</span>
+                    </template>
+                    <el-input v-model="form.uploadR2Bucket" placeholder="R2 Bucket" />
+                  </el-form-item>
+                  <el-form-item class="field-card" prop="uploadR2AccessKeyId">
+                    <template #label>
+                      <span class="field-label">Access Key ID</span>
+                    </template>
+                    <el-input v-model="form.uploadR2AccessKeyId" placeholder="R2 Access Key ID" />
+                  </el-form-item>
+                  <el-form-item class="field-card" prop="uploadR2AccessKeySecret">
+                    <template #label>
+                      <span class="field-label">Secret Access Key</span>
+                    </template>
+                    <el-input
+                      v-model="form.uploadR2AccessKeySecret"
+                      show-password
+                      placeholder="R2 Secret Access Key"
+                    />
+                  </el-form-item>
+                  <el-form-item class="field-card full" prop="uploadR2Domain">
+                    <template #label>
+                      <span class="field-label">Public Domain</span>
+                    </template>
+                    <el-input
+                      v-model="form.uploadR2Domain"
+                      placeholder="Optional, e.g. https://cdn.example.com"
+                    />
+                  </el-form-item>
+                </div>
               </div>
             </div>
           </el-tab-pane>
@@ -328,6 +371,13 @@ const uploadProviderOptions = [
     description:
       "适合公网访问和云上部署，配置 Endpoint、Bucket 与访问密钥后即可切换使用。",
   },
+  {
+    value: "cloudflare-r2",
+    label: "Cloudflare R2",
+    title: "Cloudflare R2 Storage",
+    description:
+      "S3-compatible object storage. Configure the R2 endpoint, bucket, and S3 API token keys.",
+  },
 ];
 
 const form = reactive({
@@ -350,6 +400,11 @@ const form = reactive({
   uploadMinioAccessKey: "",
   uploadMinioSecretKey: "",
   uploadMinioDomain: "",
+  uploadR2Endpoint: "",
+  uploadR2Bucket: "",
+  uploadR2AccessKeyId: "",
+  uploadR2AccessKeySecret: "",
+  uploadR2Domain: "",
 });
 
 const currentUploadProvider = computed(
@@ -479,6 +534,34 @@ const formRules = {
       ["aliyun-oss"],
       () => form.uploadOssAccessKeySecret,
       "请输入阿里云 AccessKey Secret",
+    ),
+  ],
+  uploadR2Endpoint: [
+    createProviderRule(
+      ["cloudflare-r2"],
+      () => form.uploadR2Endpoint,
+      "Please enter Cloudflare R2 Endpoint",
+    ),
+  ],
+  uploadR2Bucket: [
+    createProviderRule(
+      ["cloudflare-r2"],
+      () => form.uploadR2Bucket,
+      "Please enter Cloudflare R2 Bucket",
+    ),
+  ],
+  uploadR2AccessKeyId: [
+    createProviderRule(
+      ["cloudflare-r2"],
+      () => form.uploadR2AccessKeyId,
+      "Please enter Cloudflare R2 Access Key ID",
+    ),
+  ],
+  uploadR2AccessKeySecret: [
+    createProviderRule(
+      ["cloudflare-r2"],
+      () => form.uploadR2AccessKeySecret,
+      "Please enter Cloudflare R2 Secret Access Key",
     ),
   ],
 };

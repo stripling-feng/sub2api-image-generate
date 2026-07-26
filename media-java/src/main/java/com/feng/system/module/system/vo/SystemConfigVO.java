@@ -23,4 +23,9 @@ public class SystemConfigVO {
     private String uploadMinioAccessKey;
     private String uploadMinioSecretKey;
     private String uploadMinioDomain;
+    private String uploadR2Endpoint;
+    private String uploadR2Bucket;
+    private String uploadR2AccessKeyId;
+    private String uploadR2AccessKeySecret;
+    private String uploadR2Domain;
 }
