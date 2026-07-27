@@ -18,6 +18,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
@@ -26,6 +27,7 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.nullValue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
@@ -52,6 +54,15 @@ class ImageApiContractTest {
         when(sessions.requireProfile(any(), any())).thenReturn(profile);
         when(queries.history(anyString(), anyInt(), anyInt())).thenReturn(Map.of("jobs", List.of(), "page", 1, "pageSize", 10, "total", 0, "totalPages", 1));
         when(queries.results(anyString(), anyString())).thenReturn(List.of());
+        Map<String, Object> compactResult = new LinkedHashMap<>();
+        compactResult.put("request_id", "request");
+        compactResult.put("request_index", 1);
+        compactResult.put("request_total", 2);
+        compactResult.put("status", "PENDING");
+        compactResult.put("progress", 0);
+        compactResult.put("errorMessage", null);
+        compactResult.put("url", null);
+        when(queries.compactResults(anyString(), anyString())).thenReturn(List.of(compactResult));
         when(queries.download(anyString(), eq("image"))).thenReturn(new ImageQueryService.DownloadedImage(
                 "fake-png".getBytes(), "image/png", "image.png"));
         when(queries.deleteJobs(anyString())).thenReturn(2);
@@ -83,6 +94,15 @@ class ImageApiContractTest {
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.url").value("https://cdn.example.com/material/" + today() + "/image.png"));
         mvc.perform(get("/api/images/history")).andExpect(status().isOk()).andExpect(jsonPath("$.data.jobs").isArray());
         mvc.perform(get("/api/images/results/request")).andExpect(status().isOk()).andExpect(jsonPath("$.data.jobs").isArray());
+        mvc.perform(get("/api/images/request")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").isArray())
+                .andExpect(jsonPath("$.data[0].request_id").value("request"))
+                .andExpect(jsonPath("$.data[0].request_index").value(1))
+                .andExpect(jsonPath("$.data[0].request_total").value(2))
+                .andExpect(jsonPath("$.data[0].status").value("PENDING"))
+                .andExpect(jsonPath("$.data[0].progress").value(0))
+                .andExpect(jsonPath("$.data[0].errorMessage").value(nullValue()))
+                .andExpect(jsonPath("$.data[0].url").value(nullValue()));
         mvc.perform(get("/api/images/image/download"))
                 .andExpect(status().isOk())
                 .andExpect(header().string("Content-Disposition", containsString("attachment")))

@@ -48,6 +48,10 @@ public class ImageQueryService {
         return mapTasks(values);
     }
 
+    public List<Map<String, Object>> compactResults(String apiKey, String requestId) {
+        return results(apiKey, requestId).stream().map(this::compactTask).toList();
+    }
+
     public DownloadedImage download(String apiKey, String imageId) {
         MediaTaskResult result = resultService.findOwnedImageResult(apiKey, imageId);
         if (result == null) throw new ImageApiException(404, "Image not found.");
@@ -113,6 +117,26 @@ public class ImageQueryService {
         result.put("durationMs", task.getDurationMs());
         result.put("createdAt", iso(task.getCreatedAt()));
         result.put("images", values.stream().map(this::mapResult).toList());
+        return result;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> compactTask(Map<String, Object> task) {
+        Map<String, Object> params = task.get("params") instanceof Map<?, ?> value
+                ? (Map<String, Object>) value : Map.of();
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("request_id", params.get("request_id"));
+        result.put("request_index", params.get("request_index"));
+        result.put("request_total", params.get("request_total"));
+        result.put("status", task.get("status"));
+        result.put("progress", task.get("progress"));
+        result.put("errorMessage", task.get("errorMessage"));
+        Object url = null;
+        if (task.get("images") instanceof List<?> images && !images.isEmpty()
+                && images.get(0) instanceof Map<?, ?> image) {
+            url = image.get("publicUrl");
+        }
+        result.put("url", url);
         return result;
     }
 

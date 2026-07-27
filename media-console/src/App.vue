@@ -15,6 +15,19 @@ type ReferenceImage = {
 };
 
 type PreviewImage = GeneratedImage & { job: GenerationJob };
+type HistoryBatch = {
+  requestId: string;
+  jobs: GenerationJob[];
+  prompt: string;
+  model: string;
+  status: GenerationJob["status"];
+  createdAt: string;
+  totalCount: number;
+  completedCount: number;
+  generatedCount: number;
+  thumbnailUrl: string;
+  thumbnailJob: GenerationJob;
+};
 const maxReferenceImageBytes = 10 * 1024 * 1024;
 const snowflakeEpoch = 1_704_067_200_000;
 let snowflakeSequence = 0n;
@@ -65,40 +78,74 @@ let historyClockTimer: number | undefined;
 const currentResultJobs = computed(() => {
   if (!store.currentRequestId) return [];
 
-  return store.jobs.filter((job) => job.params.request_id === store.currentRequestId);
+  return sortJobsByRequestIndex(store.jobs.filter((job) => requestIdForJob(job) === store.currentRequestId));
 });
-const latestImages = computed(() => currentResultJobs.value.flatMap((job) => {
-  const images = job.images ?? [];
-  if (images.length) {
-    return images.map((image) => ({ ...image, job }));
-  }
+const latestImages = computed(() => {
+  const jobs = currentResultJobs.value;
+  if (!jobs.length) return [];
 
-  if (job.status === "PENDING") {
-    return Array.from({ length: Math.max(1, job.count) }, (_item, index) => ({
-      id: `pending-${job.id}-${index}`,
-      jobId: job.id,
-      publicUrl: "",
-      mimeType: "application/x-pending",
-      sizeBytes: 0,
-      createdAt: job.createdAt,
-      job
-    }));
-  }
+  const totalCount = requestTotalForJobs(jobs);
+  const slots: Array<PreviewImage | undefined> = Array.from({ length: Math.max(1, totalCount) });
+  const overflow: PreviewImage[] = [];
+  const firstJob = jobs[0];
+  const failedJob = jobs.find((job) => job.status === "FAILED");
+  const hasPendingJobs = jobs.some((job) => job.status === "PENDING");
 
-  if (job.status === "FAILED") {
-    return [{
-      id: `failed-${job.id}`,
-      jobId: job.id,
-      publicUrl: failedImageUrl,
-      mimeType: "application/x-failed",
-      sizeBytes: 0,
-      createdAt: job.createdAt,
-      job
-    }];
-  }
+  jobs.forEach((job) => {
+    const images = job.images ?? [];
+    const requestIndex = requestIndexForJob(job);
+    const targetIndex = requestIndex != null ? requestIndex - 1 : -1;
+    const previews: PreviewImage[] = images.length
+      ? images.map((image) => ({ ...image, job }))
+      : job.status === "FAILED"
+        ? [{
+            id: `failed-${job.id}`,
+            jobId: job.id,
+            publicUrl: failedImageUrl,
+            mimeType: "application/x-failed",
+            sizeBytes: 0,
+            createdAt: job.createdAt,
+            job
+          }]
+        : job.status === "PENDING"
+          ? [{
+              id: `pending-${job.id}`,
+              jobId: job.id,
+              publicUrl: "",
+              mimeType: "application/x-pending",
+              sizeBytes: 0,
+              createdAt: job.createdAt,
+              job
+            }]
+          : [];
 
-  return [];
-}));
+    previews.forEach((preview, offset) => {
+      const index = targetIndex >= 0 ? targetIndex + offset : slots.findIndex((slot) => !slot);
+      if (index >= 0 && index < slots.length && !slots[index]) {
+        slots[index] = preview;
+      } else {
+        overflow.push(preview);
+      }
+    });
+  });
+
+  slots.forEach((slot, index) => {
+    if (!slot && firstJob) {
+      const job = hasPendingJobs ? firstJob : (failedJob ?? firstJob);
+      slots[index] = {
+        id: hasPendingJobs ? `pending-${store.currentRequestId}-${index + 1}` : `failed-${store.currentRequestId}-${index + 1}`,
+        jobId: job.id,
+        publicUrl: hasPendingJobs ? "" : failedImageUrl,
+        mimeType: hasPendingJobs ? "application/x-pending" : "application/x-failed",
+        sizeBytes: 0,
+        createdAt: job.createdAt,
+        job: { ...job, status: hasPendingJobs ? "PENDING" : "FAILED", images: [] }
+      };
+    }
+  });
+
+  return [...slots.filter((slot): slot is PreviewImage => Boolean(slot)), ...overflow];
+});
 const resultsLayoutClass = computed(() => {
   const count = latestImages.value.length;
   if (count <= 1) return "single";
@@ -130,7 +177,21 @@ const referencePreviewImages = computed<PreviewImage[]>(() => {
   }));
 });
 const historyPageCount = computed(() => store.historyTotalPages);
-const pagedHistoryJobs = computed(() => store.jobs);
+const pagedHistoryBatches = computed(() => {
+  const groups = new Map<string, GenerationJob[]>();
+  store.jobs.forEach((job) => {
+    const requestId = requestIdForJob(job);
+    groups.set(requestId, [...(groups.get(requestId) ?? []), job]);
+  });
+
+  return [...groups.entries()]
+    .map(([requestId, jobs]) => buildHistoryBatch(requestId, jobs))
+    .sort((left, right) => {
+      if (left.status === "PENDING" && right.status !== "PENDING") return -1;
+      if (left.status !== "PENDING" && right.status === "PENDING") return 1;
+      return Date.parse(right.createdAt) - Date.parse(left.createdAt);
+    });
+});
 const previewImages = computed(() => previewMode.value === "single"
   ? (singlePreviewImage.value ? [singlePreviewImage.value] : [])
   : previewMode.value === "reference"
@@ -151,6 +212,68 @@ function statusLabel(status: GenerationJob["status"]) {
     SUCCEEDED: "已完成",
     FAILED: "失败"
   }[status];
+}
+
+function requestIdForJob(job: GenerationJob) {
+  return typeof job.params.request_id === "string" ? job.params.request_id : job.id;
+}
+
+function requestIndexForJob(job: GenerationJob) {
+  return typeof job.params.request_index === "number" ? job.params.request_index : undefined;
+}
+
+function requestTotalForJobs(jobs: GenerationJob[]) {
+  const declaredTotal = Math.max(0, ...jobs.map((job) => (
+    typeof job.params.request_total === "number" ? job.params.request_total : 0
+  )));
+  if (declaredTotal > 0) return declaredTotal;
+  return jobs.reduce((sum, job) => sum + Math.max(1, job.images?.length || job.count || 1), 0);
+}
+
+function sortJobsByRequestIndex(jobs: GenerationJob[]) {
+  return [...jobs].sort((left, right) => {
+    const indexDiff = (requestIndexForJob(left) ?? Number.MAX_SAFE_INTEGER) - (requestIndexForJob(right) ?? Number.MAX_SAFE_INTEGER);
+    if (indexDiff !== 0) return indexDiff;
+    return Date.parse(left.createdAt) - Date.parse(right.createdAt);
+  });
+}
+
+function failedCountForJobs(jobs: GenerationJob[]) {
+  return jobs
+    .filter((job) => job.status === "FAILED")
+    .reduce((sum, job) => sum + Math.max(1, job.count || 1), 0);
+}
+
+function historyBatchStatus(jobs: GenerationJob[], totalCount: number, completedCount: number): GenerationJob["status"] {
+  if (jobs.some((job) => job.status === "PENDING") && completedCount < totalCount) return "PENDING";
+  if (jobs.some((job) => job.status === "FAILED")) return "FAILED";
+  return "SUCCEEDED";
+}
+
+function buildHistoryBatch(requestId: string, jobs: GenerationJob[]): HistoryBatch {
+  const orderedJobs = sortJobsByRequestIndex(jobs);
+  const thumbnailJob = orderedJobs.find((job) => job.images?.length) ?? orderedJobs[0];
+  const totalCount = requestTotalForJobs(orderedJobs);
+  const generatedCount = orderedJobs.reduce((sum, job) => sum + (job.images?.length ?? 0), 0);
+  const completedCount = Math.min(totalCount, generatedCount + failedCountForJobs(orderedJobs));
+  const status = historyBatchStatus(orderedJobs, totalCount, completedCount);
+  const createdAt = orderedJobs
+    .map((job) => job.createdAt)
+    .sort((left, right) => Date.parse(right) - Date.parse(left))[0] ?? new Date().toISOString();
+
+  return {
+    requestId,
+    jobs: orderedJobs,
+    prompt: orderedJobs[0]?.prompt ?? "",
+    model: orderedJobs[0]?.model ?? "",
+    status,
+    createdAt,
+    totalCount,
+    completedCount,
+    generatedCount,
+    thumbnailUrl: thumbnailJob ? historyThumbnail(thumbnailJob) : "",
+    thumbnailJob: thumbnailJob ?? orderedJobs[0]
+  };
 }
 
 function formatDuration(durationMs: number) {
@@ -181,10 +304,6 @@ function historyThumbnail(job: GenerationJob) {
   if (image) return image.publicUrl;
   if (job.status === "FAILED") return failedImageUrl;
   return "";
-}
-
-function requestIdForJob(job: GenerationJob) {
-  return typeof job.params.request_id === "string" ? job.params.request_id : "";
 }
 
 function isPendingPreview(item: PreviewImage) {
@@ -651,10 +770,17 @@ function downloadAll() {
     });
 }
 
-function downloadJobImages(job: GenerationJob) {
-  (job.images ?? []).forEach((image, index) => {
+function downloadBatchImages(batch: HistoryBatch) {
+  batch.jobs.flatMap((job) => job.images ?? []).forEach((image, index) => {
     window.setTimeout(() => { void saveImageFile(image); }, index * 120);
   });
+}
+
+async function deleteHistoryBatch(batch: HistoryBatch) {
+  await Promise.all(batch.jobs.map((job) => store.deleteJob(job.id))).catch(() => undefined);
+  if (store.currentRequestId === batch.requestId) {
+    store.currentRequestId = "";
+  }
 }
 
 async function deleteAllHistory() {
@@ -674,30 +800,25 @@ function openPreview(id: string) {
   previewImageId.value = id;
 }
 
-async function openHistoryPreview(job: GenerationJob) {
-  const requestId = requestIdForJob(job);
-  let shouldShowBatchInResults = false;
+function openHistoryPreview(batch: HistoryBatch) {
+  const requestId = batch.requestId;
 
   if (requestId) {
-    await store.loadCurrentResults(requestId).catch((error) => {
-      store.error = error instanceof Error ? error.message : "批次结果加载失败";
-    });
-    shouldShowBatchInResults = store.jobs.some((item) => requestIdForJob(item) === requestId && item.status === "PENDING");
+    const onlyImageJob = batch.jobs.find((job) => job.images?.length);
+    const onlyImage = onlyImageJob?.images?.[0];
 
-    if (shouldShowBatchInResults) {
-      store.currentRequestId = requestId;
-      previewMode.value = "latest";
-      singlePreviewImage.value = null;
-      previewImageId.value = null;
+    if (batch.totalCount === 1 && onlyImage && onlyImageJob) {
+      previewMode.value = "single";
+      singlePreviewImage.value = { ...onlyImage, job: onlyImageJob };
+      previewImageId.value = onlyImage.id;
+      return;
     }
+
+    store.currentRequestId = requestId;
+    previewMode.value = "latest";
+    singlePreviewImage.value = null;
+    previewImageId.value = null;
   }
-
-  const image = (job.images ?? [])[0];
-  if (!image) return;
-
-  previewMode.value = shouldShowBatchInResults ? "latest" : "single";
-  singlePreviewImage.value = shouldShowBatchInResults ? null : { ...image, job };
-  previewImageId.value = image.id;
 }
 
 function openReferencePreview(index: number) {
@@ -738,12 +859,6 @@ async function copyText(text: string) {
     <div class="workspace">
       <aside class="panel controls">
         <section class="panel-section">
-          <div class="section-title">
-            <KeyRound :size="17" />
-            <div>
-              <h2>连接</h2>
-            </div>
-          </div>
           <label>
             <span>API Key</span>
             <span class="secret-field">
@@ -786,76 +901,9 @@ async function copyText(text: string) {
           </label>
           <p class="muted">预计扣费：${{ estimatedChargeUsd }}</p>
         </section>
-      </aside>
-
-      <section class="panel composer">
-        <div class="section-title results-title">
-          <div class="section-title-label">
-            <Play :size="17" />
-            <div>
-              <h2>生成结果</h2>
-            </div>
-          </div>
-          <button class="title-action" type="button" :disabled="!latestImages.some((item) => !isPendingPreview(item) && !isFailedPreview(item))" @click="downloadAll">
-            <ArrowDownToLine :size="14" />
-            下载全部
-          </button>
-        </div>
-
-        <div class="retention-notice" role="note">
-          <Clock3 :size="15" />
-          <span>生成图片只保留 24 小时，请及时下载保存。</span>
-        </div>
-
-        <div :class="['results', `results-${resultsLayoutClass}`]">
-          <figure v-for="item in latestImages" :key="item.id" :class="['image-tile', { failed: isFailedPreview(item) }]">
-            <button class="image-preview-trigger" type="button" title="预览图片" :disabled="isPendingPreview(item) || isFailedPreview(item)" @click="openPreview(item.id)">
-              <div v-if="isPendingPreview(item)" class="generation-loader" aria-label="图片生成中">
-                <div class="generation-loader-grid"></div>
-                <div class="generation-loader-orbit">
-                  <span></span>
-                </div>
-                <div class="generation-loader-copy">
-                  <strong>正在生成图像</strong>
-                  <span>已等待 {{ durationLabel(item.job) }}<template v-if="item.job.progress"> · {{ item.job.progress }}%</template></span>
-                </div>
-                <div class="generation-loader-corners" aria-hidden="true">
-                  <span></span>
-                  <span></span>
-                  <span></span>
-                  <span></span>
-                </div>
-                <div class="generation-loader-track"><span></span></div>
-              </div>
-              <div v-else-if="isFailedPreview(item)" class="generation-failed" aria-label="图片生成失败">
-                <img :src="item.publicUrl" alt="图片生成失败" @error="useUnavailableImage" />
-              </div>
-              <img v-else :src="item.publicUrl" :alt="item.job.prompt" @error="useUnavailableImage" />
-            </button>
-            <figcaption>
-              <p>{{ item.job.prompt }}</p>
-              <div class="image-meta">
-                <span>耗时：{{ durationLabel(item.job) }}</span>
-                <span v-if="isFailedPreview(item)" class="failed-reason">{{ item.job.errorMessage || "上游生成失败" }}</span>
-              </div>
-              <div class="image-actions">
-                <button type="button" title="下载图片" :disabled="isPendingPreview(item) || isFailedPreview(item)" @click="downloadImage(item)">
-                  <ArrowDownToLine :size="15" />
-                  下载
-                </button>
-              </div>
-            </figcaption>
-          </figure>
-          <div v-if="!latestImages.length" class="empty">
-            <div>
-              <strong>等待第一张作品</strong>
-              <span>填写提示词并点击生成，结果会以网格形式展示。</span>
-            </div>
-          </div>
-        </div>
 
         <div
-          :class="['prompt-panel', { 'is-reference-dragging': isReferenceDragging, 'is-reference-importing': isReferenceImporting }]"
+          :class="['prompt-panel sidebar-prompt-panel', { 'is-reference-dragging': isReferenceDragging, 'is-reference-importing': isReferenceImporting }]"
           @dragover="handleReferenceDragOver"
           @dragleave="handleReferenceDragLeave"
           @drop="handleReferenceDrop"
@@ -882,7 +930,7 @@ async function copyText(text: string) {
               </label>
               <span class="muted">可从右侧历史拖入</span>
             </div>
-            <span class="muted">参考图最多 {{ referenceLimit }} 张，每张不超过 10MB；蒙版须与首图同尺寸。</span>
+            <span class="muted">参考图最大 {{ referenceLimit }} 张，每张不超过 10MB。</span>
           </div>
 
           <div v-if="referenceImages.length" class="reference-grid">
@@ -908,7 +956,10 @@ async function copyText(text: string) {
             </figure>
           </div>
 
-          <textarea v-model="form.prompt" class="prompt" placeholder="描述你要生成的画面、主体、镜头、材质和光线。"></textarea>
+          <label>
+            <span>描述</span>
+            <textarea v-model="form.prompt" class="prompt connection-prompt" placeholder="描述你要生成的画面、主体、镜头、材质和光线。"></textarea>
+          </label>
 
           <div class="button-row composer-actions">
             <button class="primary big" type="button" :disabled="store.loading" @click="generate">
@@ -917,9 +968,106 @@ async function copyText(text: string) {
               生成图片
             </button>
           </div>
-          <p v-if="store.status || store.error" :class="['composer-message', { error: store.error }]">
-            {{ store.error || store.status }}
-          </p>
+        </div>
+      </aside>
+
+      <section class="panel composer">
+        <div class="retention-notice" role="note">
+          <span class="retention-copy">
+            <Clock3 :size="15" />
+            <span>24 小时，请及时下载保存。</span>
+          </span>
+          <button class="title-action" type="button" :disabled="!latestImages.some((item) => !isPendingPreview(item) && !isFailedPreview(item))" @click="downloadAll">
+            下载全部
+          </button>
+        </div>
+
+        <div :class="['results', `results-${resultsLayoutClass}`]">
+          <figure v-for="item in latestImages" :key="item.id" :class="['image-tile', { failed: isFailedPreview(item) }]">
+            <button class="image-preview-trigger" type="button" title="预览图片" :disabled="isPendingPreview(item) || isFailedPreview(item)" @click="openPreview(item.id)">
+              <div v-if="isPendingPreview(item)" class="generation-loader" aria-label="图片生成中">
+                <div class="generation-loader-grid"></div>
+                <div class="generation-loader-copy">
+                  <strong>正在生成图像</strong>
+                  <span>已等待 {{ durationLabel(item.job) }}<template v-if="item.job.progress"> · {{ item.job.progress }}%</template></span>
+                </div>
+                <div class="generation-loader-track"><span></span></div>
+              </div>
+              <div v-else-if="isFailedPreview(item)" class="generation-failed" aria-label="图片生成失败">
+                <img :src="item.publicUrl" alt="图片生成失败" @error="useUnavailableImage" />
+              </div>
+              <img v-else :src="item.publicUrl" :alt="item.job.prompt" @error="useUnavailableImage" />
+            </button>
+          </figure>
+          <div v-if="!latestImages.length" class="empty">
+            <div>
+              <strong>等待第一张作品</strong>
+              <span>填写提示词并点击生成，结果会以网格形式展示。</span>
+            </div>
+          </div>
+        </div>
+
+        <div
+          :class="['prompt-panel composer-prompt-panel', { 'is-reference-dragging': isReferenceDragging, 'is-reference-importing': isReferenceImporting }]"
+          @dragover="handleReferenceDragOver"
+          @dragleave="handleReferenceDragLeave"
+          @drop="handleReferenceDrop"
+        >
+          <div v-if="isReferenceImporting" class="reference-import-overlay" role="status" aria-live="polite">
+            <div class="reference-import-card">
+              <Loader2 class="spin" :size="24" />
+              <strong>正在导入参考图</strong>
+              <span>图片读取中</span>
+            </div>
+          </div>
+
+          <div class="reference-bar">
+            <div class="reference-upload-row">
+              <label class="upload-button">
+                <ImagePlus :size="17" />
+                上传参考图
+                <input type="file" accept="image/*" multiple @change="handleReferenceUpload" />
+              </label>
+              <label v-if="activeModel?.supportsMask" class="upload-button" :class="{ disabled: !referenceImages.length }">
+                <ImagePlus :size="17" />
+                上传 PNG 蒙版
+                <input type="file" accept="image/png,.png" :disabled="!referenceImages.length" @change="handleMaskUpload" />
+              </label>
+              <span class="muted">可从右侧历史拖入</span>
+            </div>
+            <span class="muted">参考图最多 {{ referenceLimit }} 张，每张不超过 10MB。</span>
+          </div>
+
+          <div v-if="referenceImages.length" class="reference-grid">
+            <figure v-for="image, index in referenceImages" :key="image.previewUrl" class="reference-tile">
+              <button class="reference-preview-button" type="button" title="预览参考图" @click="openReferencePreview(index)">
+                <img :src="image.previewUrl" :alt="image.name" @error="useUnavailableImage" />
+              </button>
+              <button class="reference-remove" type="button" title="移除参考图" @click="removeReferenceImage(index)">
+                <X :size="13" />
+              </button>
+            </figure>
+          </div>
+
+          <div v-if="maskImage" class="mask-preview-row">
+            <span class="muted">蒙版</span>
+            <figure class="reference-tile">
+              <button class="reference-preview-button" type="button" title="蒙版预览">
+                <img :src="maskImage.previewUrl" :alt="maskImage.name" />
+              </button>
+              <button class="reference-remove" type="button" title="移除蒙版" @click="removeMaskImage">
+                <X :size="13" />
+              </button>
+            </figure>
+          </div>
+
+          <div class="button-row composer-actions">
+            <button class="primary big" type="button" :disabled="store.loading" @click="generate">
+              <Loader2 v-if="store.loading" class="spin" :size="18" />
+              <Play v-else :size="18" />
+              生成图片
+            </button>
+          </div>
         </div>
       </section>
 
@@ -940,69 +1088,61 @@ async function copyText(text: string) {
         </div>
 
         <section class="list">
-          <article v-for="job in pagedHistoryJobs" :key="job.id" class="list-item">
+          <article v-for="batch in pagedHistoryBatches" :key="batch.requestId" class="list-item">
             <div
               class="history-thumb-button"
-              :title="job.status === 'FAILED' ? failedReasonTitle(job) : '查看批次'"
+              :title="batch.status === 'FAILED' ? failedReasonTitle(batch.thumbnailJob) : '查看批次'"
               role="button"
               tabindex="0"
-              @click="openHistoryPreview(job)"
-              @keydown.enter.prevent="openHistoryPreview(job)"
-              @keydown.space.prevent="openHistoryPreview(job)"
+              @click="openHistoryPreview(batch)"
+              @keydown.enter.prevent="openHistoryPreview(batch)"
+              @keydown.space.prevent="openHistoryPreview(batch)"
             >
-              <span v-if="job.status === 'PENDING' && !job.images?.length" class="generation-loader history-thumb-loading" aria-label="图片生成中">
+              <span v-if="batch.status === 'PENDING' && !batch.thumbnailUrl" class="generation-loader history-thumb-loading" aria-label="图片生成中">
                 <span class="generation-loader-grid"></span>
-                <span class="generation-loader-orbit">
-                  <span></span>
-                </span>
-                <span class="generation-loader-corners" aria-hidden="true">
-                  <span></span>
-                  <span></span>
-                  <span></span>
-                  <span></span>
-                </span>
                 <span class="generation-loader-track"><span></span></span>
               </span>
               <img
-                v-else-if="historyThumbnail(job)"
+                v-else-if="batch.thumbnailUrl"
                 class="history-thumb"
-                :src="historyThumbnail(job)"
-                :alt="job.status === 'FAILED' ? failedReasonTitle(job) : job.prompt"
-                :draggable="!!job.images?.length"
-                :title="job.status === 'FAILED' ? failedReasonTitle(job) : job.prompt"
-                @dragstart="dragHistoryImage($event, job)"
+                :src="batch.thumbnailUrl"
+                :alt="batch.status === 'FAILED' ? failedReasonTitle(batch.thumbnailJob) : batch.prompt"
+                :draggable="!!batch.generatedCount"
+                :title="batch.status === 'FAILED' ? failedReasonTitle(batch.thumbnailJob) : batch.prompt"
+                @dragstart="dragHistoryImage($event, batch.thumbnailJob)"
                 @error="useUnavailableImage"
               />
               <span v-else class="history-thumb-placeholder">无图</span>
+              <span class="history-count-mask">{{ batch.completedCount }} / {{ batch.totalCount }}</span>
             </div>
             <div class="history-meta">
-              <strong class="history-prompt" :title="job.prompt">{{ job.prompt }}</strong>
-              <p>耗时：{{ durationLabel(job) }}</p>
+              <strong class="history-prompt" :title="batch.prompt">{{ batch.prompt }}</strong>
+              <p>已完成 {{ batch.completedCount }} / {{ batch.totalCount }}</p>
               <span class="history-status-wrap">
                 <span
-                  :class="['history-status', job.status.toLowerCase()]"
-                  :title="job.status === 'FAILED' ? failedReasonTitle(job) : undefined"
+                  :class="['history-status', batch.status.toLowerCase()]"
+                  :title="batch.status === 'FAILED' ? failedReasonTitle(batch.thumbnailJob) : undefined"
                 >
-                  {{ statusLabel(job.status) }}
+                  {{ statusLabel(batch.status) }}
                 </span>
-                <span v-if="job.status === 'FAILED'" class="history-failed-tooltip" role="tooltip">
-                  {{ failedReasonTitle(job) }}
+                <span v-if="batch.status === 'FAILED'" class="history-failed-tooltip" role="tooltip">
+                  {{ failedReasonTitle(batch.thumbnailJob) }}
                 </span>
               </span>
             </div>
             <div class="item-actions">
-              <button class="icon-btn small" title="下载图片" type="button" :disabled="!job.images?.length" @click="downloadJobImages(job)">
+              <button class="icon-btn small" title="下载图片" type="button" :disabled="!batch.generatedCount" @click="downloadBatchImages(batch)">
                 <ArrowDownToLine :size="15" />
               </button>
-              <button class="icon-btn small" title="复用参数" type="button" @click="reuseJob(job)">
+              <button class="icon-btn small" title="复用参数" type="button" @click="reuseJob(batch.thumbnailJob)">
                 <RefreshCw :size="15" />
               </button>
-              <button class="icon-btn small danger-text" title="删除任务" type="button" @click="store.deleteJob(job.id)">
+              <button class="icon-btn small danger-text" title="删除任务" type="button" @click="deleteHistoryBatch(batch)">
                 <Trash2 :size="15" />
               </button>
             </div>
           </article>
-          <div v-if="!store.jobs.length" class="empty compact">
+          <div v-if="!pagedHistoryBatches.length" class="empty compact">
             <div>
               <strong>暂无历史</strong>
               <span>成功生成后会自动记录在这里。</span>
@@ -1019,20 +1159,15 @@ async function copyText(text: string) {
 
     <div v-if="previewImage" class="preview-modal" role="dialog" aria-modal="true" @click.self="closePreview">
       <div class="preview-content">
-        <div class="preview-toolbar">
-          <span>{{ previewIndex + 1 }} / {{ previewImages.length }}</span>
-          <button class="preview-close" type="button" title="关闭预览" @click="closePreview">关闭</button>
-        </div>
+        <button class="preview-close" type="button" title="关闭预览" @click="closePreview">
+          <X :size="20" />
+        </button>
         <button v-if="previewImages.length > 1" class="preview-nav previous" type="button" title="上一张" @click="movePreview(-1)">‹</button>
         <img :src="previewImage.publicUrl" :alt="previewImage.job.prompt" @error="useUnavailableImage" />
         <button v-if="previewImages.length > 1" class="preview-nav next" type="button" title="下一张" @click="movePreview(1)">›</button>
-        <p>{{ previewImage.job.prompt }}</p>
-        <div v-if="previewMode !== 'reference'" class="preview-actions">
-          <button type="button" title="下载图片" @click="downloadImage(previewImage)">
-            <ArrowDownToLine :size="15" />
-            下载
-          </button>
-        </div>
+        <button v-if="previewMode !== 'reference'" class="preview-download" type="button" title="下载图片" @click="downloadImage(previewImage)">
+          <ArrowDownToLine :size="24" stroke-width="2.6" />
+        </button>
       </div>
     </div>
 

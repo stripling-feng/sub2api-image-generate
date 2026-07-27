@@ -54,6 +54,14 @@ public class ImageQueryController {
     }
 
     /**
+     * GET /api/images/{requestId}:面向用户对接的精简批次结果查询。
+     */
+    @GetMapping("/api/images/{requestId}")
+    public ApiResponse<List<?>> compactResults(@PathVariable String requestId, HttpServletRequest request, HttpServletResponse response) {
+        return ApiResponse.success(queries.compactResults(profile(request, response).getEncryptedKey(), requestId));
+    }
+
+    /**
      * GET /api/images/{id}/download:以附件形式下载当前密钥下的生成图片。
      */
     @GetMapping("/api/images/{id}/download")
