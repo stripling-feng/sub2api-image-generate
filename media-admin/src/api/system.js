@@ -122,3 +122,23 @@ export const videoModelApi = {
   update: (id, data) => request({ url: `/api/model/videos/${id}`, method: 'put', data }),
   remove: (id) => request({ url: `/api/model/videos/${id}`, method: 'delete' }),
 }
+
+export const gptAccountApi = {
+  list: (params) => request({ url: '/api/gpt/accounts', method: 'get', params }),
+  importTokens: (accessTokens) => request({
+    url: '/api/gpt/accounts/import',
+    method: 'post',
+    data: { accessTokens },
+    timeout: 120000,
+  }),
+  refresh: (id) => request({ url: `/api/gpt/accounts/${id}/refresh`, method: 'post', timeout: 120000 }),
+  refreshBatch: (ids) => request({
+    url: '/api/gpt/accounts/refresh',
+    method: 'post',
+    data: { ids },
+    timeout: 300000,
+  }),
+  updateUsed: (id, used) => request({ url: `/api/gpt/accounts/${id}/used`, method: 'put', data: { used } }),
+  remove: (id) => request({ url: `/api/gpt/accounts/${id}`, method: 'delete' }),
+  removeBatch: (ids) => request({ url: '/api/gpt/accounts', method: 'delete', data: { ids } }),
+}

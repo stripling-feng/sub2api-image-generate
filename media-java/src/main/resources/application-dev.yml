@@ -32,3 +32,6 @@ sub2api:
     username: root
     password: Aa@110112119
     maximum-pool-size: ${SUB2API_DB_POOL_SIZE:10}
+
+gpt:
+  legacy-account-encryption-key: ${GPT_ACCOUNT_LEGACY_ENCRYPTION_KEY:${GPT_ACCOUNT_ENCRYPTION_KEY:sub2api-image-generate-local-dev-key}}

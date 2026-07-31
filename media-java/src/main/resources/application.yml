@@ -72,3 +72,9 @@ video:
   request-timeout-ms: ${VIDEO_REQUEST_TIMEOUT_MS:900000}
   poll-interval-ms: ${VIDEO_TASK_POLL_INTERVAL_MS:5000}
   poll-max-duration-ms: ${VIDEO_TASK_MAX_DURATION_MS:7200000}
+
+gpt:
+  legacy-account-encryption-key: ${GPT_ACCOUNT_LEGACY_ENCRYPTION_KEY:}
+  account:
+    status-cookie: ${GPT_ACCOUNT_STATUS_COOKIE:}
+    parallelism: ${GPT_ACCOUNT_PARALLELISM:5}

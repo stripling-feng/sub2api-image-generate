@@ -8,10 +8,11 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 @MapperScan({
         "com.feng.system.module.system.mapper",
         "com.feng.system.common.log.mapper",
-        "com.feng.system.module.tool.mapper"
-        ,"com.feng.system.module.image.mapper",
+        "com.feng.system.module.tool.mapper",
+        "com.feng.system.module.image.mapper",
         "com.feng.system.module.video.mapper",
-        "com.feng.system.module.media.mapper"
+        "com.feng.system.module.media.mapper",
+        "com.feng.system.module.gpt.mapper"
 })
 @SpringBootApplication
 @EnableScheduling

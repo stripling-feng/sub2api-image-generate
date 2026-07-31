@@ -74,6 +74,41 @@ class MediaSchemaMigrationTest {
     }
 
     @Test
+    void gptAccountMigrationCreatesEncryptedAccountStoreAndMenus() throws Exception {
+        String sql = read("db/migration/V19__gpt_account_management.sql");
+
+        assertTrue(sql.contains("create table if not exists gpt_accounts"));
+        assertTrue(sql.contains("access_token_ciphertext text not null"));
+        assertTrue(sql.contains("token_hash char(64) not null"));
+        assertTrue(sql.contains("eligible_offers jsonb"));
+        assertTrue(sql.contains("plus_eligibility"));
+        assertTrue(sql.contains("gpt账号管理"));
+        assertTrue(sql.contains("账号管理"));
+        assertTrue(sql.contains("gpt:account:import"));
+        assertTrue(sql.contains("gpt:account:refresh"));
+        assertFalse(sql.contains("drop table"));
+    }
+
+    @Test
+    void gptAccountPlaintextMigrationRenamesTokenColumn() throws Exception {
+        String sql = read("db/migration/V20__gpt_account_plaintext_tokens.sql");
+
+        assertTrue(sql.contains("rename column access_token_ciphertext to access_token"));
+        assertTrue(sql.contains("plaintext chatgpt access token"));
+    }
+
+    @Test
+    void gptAccountUsedFlagMigrationAddsFilterableMarkerAndPermission() throws Exception {
+        String sql = read("db/migration/V21__gpt_account_used_flag.sql");
+
+        assertTrue(sql.contains("add column if not exists used boolean not null default false"));
+        assertTrue(sql.contains("gpt_accounts_used_idx"));
+        assertTrue(sql.contains("gpt:account:update"));
+        assertTrue(sql.contains("标记gpt账号"));
+        assertFalse(sql.contains("drop table"));
+    }
+
+    @Test
     void mediaModuleEntitiesUseOnlyMediaPrefixedTables() throws Exception {
         java.nio.file.Path root = java.nio.file.Path.of("src/main/java/com/feng/system/module");
         try (java.util.stream.Stream<java.nio.file.Path> files = java.nio.file.Files.walk(root)) {

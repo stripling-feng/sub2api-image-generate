@@ -31,3 +31,6 @@ sub2api:
     username: ${SUB2API_DB_USERNAME}
     password: ${SUB2API_DB_PASSWORD}
     maximum-pool-size: ${SUB2API_DB_POOL_SIZE:10}
+
+gpt:
+  legacy-account-encryption-key: ${GPT_ACCOUNT_LEGACY_ENCRYPTION_KEY:}
