@@ -68,6 +68,13 @@ const supportsVideos = computed(() => Number(capabilities.value.videos ?? 0) > 0
 const supportsAudios = computed(() => Number(capabilities.value.audios ?? 0) > 0);
 const parameters = computed(() => activeModel.value?.parameters ?? []);
 const pendingCount = computed(() => history.value.filter(job => job.status === "PENDING").length);
+const videoResultsLayoutClass = computed(() => {
+  const count = jobs.value.length;
+  if (count <= 1) return "single";
+  if (count === 2) return "double";
+  if (count === 3) return "triple";
+  return "grid";
+});
 const placeholderMaterials = computed(() => {
   if (!activeModel.value?.model.startsWith("seedance-") || creationMode.value !== "image") return [];
   return [
@@ -101,6 +108,14 @@ function durationIndex(field: VideoModelParameter) {
 }
 function durationRangeMax(field: VideoModelParameter) {
   return Math.max(0, numericOptions(field).length - 1);
+}
+function isFixedDurationDisplay(field: VideoModelParameter) {
+  return field.key === "duration" && Boolean(activeModel.value?.model.startsWith("omni-"));
+}
+function selectedDurationLabel(field: VideoModelParameter) {
+  if (isFixedDurationDisplay(field)) return "10秒左右";
+  const selected = (field.options ?? []).find(option => Number(optionValue(option)) === Number(form.duration));
+  return selected ? optionLabel(selected) : `${form.duration}秒`;
 }
 function longestDurationOption() {
   const field = parameters.value.find(item => item.key === "duration");
@@ -254,6 +269,22 @@ async function loadHistory(page = historyPage.value) {
   } finally { historyLoading.value = false; }
 }
 async function openHistory(job: VideoGenerationJob) { currentRequestId.value = job.requestId; await loadResults(job.requestId); }
+async function reuseHistoryParams(job: VideoGenerationJob) {
+  form.model = job.model;
+  await nextTick();
+  form.prompt = job.prompt ?? "";
+  form.count = 1;
+  form.duration = Number(job.params?.duration ?? job.duration ?? form.duration);
+  form.aspectRatio = String(job.params?.aspectRatio ?? job.aspectRatio ?? form.aspectRatio);
+  form.resolution = String(job.params?.resolution ?? job.resolution ?? form.resolution);
+  form.generateAudio = Boolean(job.params?.generateAudio ?? job.generateAudio);
+  firstFrame.value = null;
+  lastFrame.value = null;
+  setReferenceImages([]);
+  setReferenceVideos([]);
+  setReferenceAudios([]);
+  clampDuration();
+}
 async function deleteJob(job: VideoGenerationJob) {
   if (job.status === "PENDING" || !window.confirm("确认删除该视频任务吗？")) return;
   await api.delete(`/api/video-jobs/${job.id}`); await loadHistory(historyPage.value);
@@ -399,12 +430,11 @@ onUnmounted(() => {
         <button class="icon-btn" type="button" title="刷新当前任务" :disabled="!currentRequestId" @click="loadResults(currentRequestId)"><RefreshCw :size="16" /></button>
       </div>
 
-      <div class="video-results" :class="{ 'no-results': !jobs.length }">
-        <article v-for="job in jobs" :key="job.id" class="video-result">
+      <div :class="['video-results', `video-results-${videoResultsLayoutClass}`, { 'no-results': !jobs.length }]">
+        <article v-for="job in jobs" :key="job.id" class="video-result" :class="{ failed: job.status === 'FAILED' }">
           <video v-if="job.videos?.[0]" :src="job.videos[0].publicUrl" controls preload="metadata" playsinline />
-          <div v-else-if="job.status === 'PENDING'" class="video-placeholder"><Loader2 class="spin" :size="32" /><strong>{{ statusText(job) }}</strong><span>{{ job.model }} · {{ job.duration }} 秒 · {{ job.resolution }}</span></div>
+          <div v-else-if="job.status === 'PENDING'" class="video-placeholder video-generating"><Loader2 class="spin" :size="32" /><strong>{{ statusText(job) }}</strong><span>{{ job.model }} · {{ job.duration }} 秒 · {{ job.resolution }}</span><i></i></div>
           <div v-else class="video-placeholder failed"><Film :size="28" /><strong>生成失败</strong><span>{{ job.errorMessage || '上游未返回视频' }}</span></div>
-          <footer><span>{{ job.aspectRatio }} · {{ job.duration }} 秒 · {{ job.resolution }}</span><strong>${{ Number(job.billingAmount || 0).toFixed(4) }}</strong></footer>
         </article>
         <div v-if="!jobs.length" class="video-empty"><span class="empty-icon"><Film :size="34" /></span><strong>从一个想法开始创作</strong><span>在下方描述画面，选择模型后生成视频</span></div>
       </div>
@@ -444,7 +474,8 @@ onUnmounted(() => {
           <button v-if="creationMode !== 'text'" class="dock-control material-trigger" :class="{ active: materialsOpen }" type="button" @click="materialsOpen = !materialsOpen"><ImagePlus :size="15" />素材</button>
           <label class="dock-field model-field"><span>模型</span><select v-model="form.model" :disabled="!selectableModels.length"><option v-for="model in selectableModels" :key="model.id" :value="model.model">{{ model.name }}</option></select></label>
           <template v-for="field in parameters" :key="field.key">
-            <label v-if="field.key === 'duration'" class="duration-slider"><span>{{ field.label }}</span><strong>{{ form.duration }}秒</strong><input type="range" min="0" :max="durationRangeMax(field)" step="1" :value="durationIndex(field)" :aria-label="field.label" @input="setDurationFromSlider(field, $event)" /></label>
+            <label v-if="isFixedDurationDisplay(field)" class="duration-display"><span>{{ field.label }}</span><strong>{{ selectedDurationLabel(field) }}</strong></label>
+            <label v-else-if="field.key === 'duration'" class="duration-slider"><span>{{ field.label }}</span><strong>{{ selectedDurationLabel(field) }}</strong><input type="range" min="0" :max="durationRangeMax(field)" step="1" :value="durationIndex(field)" :aria-label="field.label" @input="setDurationFromSlider(field, $event)" /></label>
             <label v-else-if="field.type === 'select'" class="dock-field"><span>{{ field.label }}</span><select :value="fieldValue(field)" @change="setField(field, $event)"><option v-for="option in field.options || []" :key="String(optionValue(option))" :value="optionValue(option)">{{ optionLabel(option) }}</option></select></label>
             <label v-else class="audio-toggle"><input type="checkbox" :checked="Boolean(fieldValue(field))" @change="setField(field, $event)" /><span>{{ field.label }}</span></label>
           </template>
@@ -469,6 +500,7 @@ onUnmounted(() => {
               <span v-else class="history-video-placeholder"><Loader2 v-if="job.status === 'PENDING'" class="spin" :size="18" /><Film v-else :size="18" /></span>
               <span class="history-video-copy"><strong>{{ job.prompt }}</strong><small>{{ date(job.createdAt) }}</small><em>{{ statusText(job) }}</em></span>
             </button>
+            <button class="icon-btn small history-reuse" type="button" title="复用参数" @click="reuseHistoryParams(job)"><RefreshCw :size="14" /></button>
             <button class="icon-btn small danger-text history-delete" type="button" title="删除任务" :disabled="job.status === 'PENDING'" @click="deleteJob(job)"><Trash2 :size="14" /></button>
           </article>
           <div v-if="!history.length && !historyLoading" class="history-empty">暂无视频历史</div>
@@ -533,15 +565,21 @@ onUnmounted(() => {
 .stage-toolbar strong { font-size: 13px; }
 .stage-toolbar span { color: var(--muted); font-size: 11px; }
 .stage-toolbar button { pointer-events: auto; }
-.video-results { min-height: 100%; padding: 64px 28px 245px; display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); align-content: center; gap: 16px; }
-.video-results.no-results { grid-template-columns: 1fr; }
-.video-result { width: 100%; max-width: 760px; margin: 0 auto; overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-soft); box-shadow: 0 16px 48px var(--shadow); }
+.video-results { min-height: 100%; padding: 64px 28px 245px; display: grid; align-content: center; justify-content: center; align-items: start; gap: 16px; }
+.video-results.no-results { grid-template-columns: 1fr; place-items: center; align-content: stretch; }
+.video-results-single { grid-template-columns: minmax(0, min(100%, 980px)); }
+.video-results-double { grid-template-columns: repeat(2, minmax(0, min(560px, calc((100% - 16px) / 2)))); }
+.video-results-triple, .video-results-grid { grid-template-columns: repeat(3, minmax(0, min(430px, calc((100% - 32px) / 3)))); }
+.video-result { width: 100%; margin: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-soft); box-shadow: 0 16px 48px var(--shadow); }
+.video-result.failed { border-color: color-mix(in srgb, var(--danger), var(--line) 34%); }
 .video-result video { width: 100%; aspect-ratio: 16 / 9; display: block; background: #050608; object-fit: contain; }
-.video-placeholder { aspect-ratio: 16 / 9; padding: 24px; display: grid; place-items: center; align-content: center; gap: 9px; color: var(--muted); text-align: center; }
-.video-placeholder.failed { color: var(--danger); }
+.video-placeholder { position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden; padding: 24px; display: grid; place-items: center; align-content: center; gap: 9px; color: var(--muted); text-align: center; background: linear-gradient(145deg, color-mix(in srgb, var(--panel-strong), transparent 4%), color-mix(in srgb, var(--panel-soft), transparent 2%)); }
+.video-placeholder.failed { color: var(--danger); background: radial-gradient(circle at 50% 38%, color-mix(in srgb, var(--danger), transparent 82%), transparent 34%), linear-gradient(145deg, var(--panel-strong), var(--panel-soft)); }
 .video-placeholder span { max-width: 88%; font-size: 12px; }
-.video-result footer { min-height: 42px; padding: 0 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 11px; }
-.video-result footer strong { color: var(--accent-2); }
+.video-generating::before { position: absolute; inset: 0; content: ""; background: linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--accent), transparent 82%) 48%, transparent 100%); transform: translateX(-100%) skewX(-16deg); animation: videoLoaderSweep 2.2s ease-in-out infinite; }
+.video-generating > svg, .video-generating strong, .video-generating span { position: relative; z-index: 1; }
+.video-generating i { position: relative; z-index: 1; width: min(220px, 64%); height: 4px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--line), transparent 30%); }
+.video-generating i::after { width: 42%; height: 100%; content: ""; display: block; border-radius: inherit; background: linear-gradient(90deg, var(--accent), var(--accent-2)); animation: videoLoaderTrack 1.8s ease-in-out infinite; }
 .video-empty { min-height: 320px; display: grid; place-items: center; align-content: center; gap: 9px; color: var(--muted); text-align: center; }
 .empty-icon { width: 64px; height: 64px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-soft); color: var(--accent); }
 .video-empty strong { color: var(--text); font-size: 15px; }
@@ -594,9 +632,10 @@ onUnmounted(() => {
 .dock-field span { color: var(--muted); font-size: 10px; white-space: nowrap; }
 .dock-field select, .dock-field input { min-width: 0; height: 36px; padding: 6px 26px 6px 8px; border-radius: 7px; font-size: 11px; }
 .dock-field input { padding-right: 7px; }
+.duration-display { width: 128px; min-height: 36px; margin: 0; padding: 0 9px; display: inline-grid; grid-template-columns: auto auto; align-items: center; gap: 7px; border: 1px solid var(--line); border-radius: 7px; }
 .duration-slider { width: 190px; min-height: 36px; margin: 0; padding: 0 9px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 7px; border: 1px solid var(--line); border-radius: 7px; }
-.duration-slider span { color: var(--muted); font-size: 10px; white-space: nowrap; }
-.duration-slider strong { color: var(--text); font-size: 11px; white-space: nowrap; }
+.duration-display span, .duration-slider span { color: var(--muted); font-size: 10px; white-space: nowrap; }
+.duration-display strong, .duration-slider strong { color: var(--text); font-size: 11px; white-space: nowrap; }
 .duration-slider input { min-width: 0; width: 100%; height: 18px; padding: 0; accent-color: var(--accent); }
 .audio-toggle { min-height: 36px; margin: 0; padding: 0 9px; display: inline-flex; grid-template-columns: none; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 7px; color: var(--text); font-size: 11px; cursor: pointer; }
 .audio-toggle input { width: 16px; height: 16px; margin: 0; padding: 0; accent-color: var(--accent); }
@@ -615,7 +654,7 @@ onUnmounted(() => {
 .history-head h2 { margin: 0; font-size: 14px; }
 .history-head p { margin: 3px 0 0; color: var(--muted); font-size: 10px; }
 .history-list { min-height: 0; padding: 9px; overflow: auto; display: grid; align-content: start; gap: 7px; }
-.history-video-item { position: relative; min-width: 0; padding: 6px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px; border: 1px solid transparent; border-radius: 7px; }
+.history-video-item { position: relative; min-width: 0; padding: 6px; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 4px; border: 1px solid transparent; border-radius: 7px; }
 .history-video-item:hover { border-color: var(--line); background: var(--panel-soft); }
 .history-video-item.succeeded { border-color: color-mix(in srgb, var(--accent-2), transparent 78%); background: color-mix(in srgb, var(--accent-2), transparent 95%); }
 .history-video-item.failed { border-color: color-mix(in srgb, var(--danger), transparent 76%); background: color-mix(in srgb, var(--danger), transparent 94%); }
@@ -630,15 +669,26 @@ onUnmounted(() => {
 .history-video-copy strong { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .history-video-copy small { color: var(--muted); font-size: 9px; }
 .history-video-copy em { color: var(--accent-2); font-size: 10px; font-style: normal; }
-.history-delete { align-self: center; }
+.history-reuse, .history-delete { align-self: center; }
 .history-empty { padding: 40px 10px; color: var(--muted); text-align: center; font-size: 12px; }
 .history-pages { padding: 9px; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 6px; border-top: 1px solid var(--line); color: var(--muted); font-size: 10px; }
 .history-pages button { min-height: 30px; padding: 0 7px; font-size: 10px; }
 
+@keyframes videoLoaderSweep {
+  0% { transform: translateX(-110%) skewX(-16deg); }
+  52%, 100% { transform: translateX(110%) skewX(-16deg); }
+}
+
+@keyframes videoLoaderTrack {
+  0% { transform: translateX(-110%); }
+  50% { transform: translateX(70%); }
+  100% { transform: translateX(245%); }
+}
+
 @media (max-width: 1180px) {
   .video-studio { grid-template-columns: 68px minmax(0, 1fr) 52px; }
   .task-drawer:not(.collapsed) { position: fixed; z-index: 40; top: 58px; right: 0; bottom: 0; width: 320px; box-shadow: -16px 0 48px var(--shadow); }
-  .video-results { grid-template-columns: minmax(0, 760px); justify-content: center; }
+  .video-results-single { grid-template-columns: minmax(0, 820px); }
 }
 
 @media (max-width: 900px) {
@@ -671,11 +721,10 @@ onUnmounted(() => {
   .prompt-input { min-height: 96px; font-size: 14px; }
   .url-fields { grid-template-columns: 1fr; }
   .dock-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .dock-control, .dock-field, .dock-field.model-field, .dock-field.count-field, .duration-slider, .audio-toggle { width: 100%; }
+  .dock-control, .dock-field, .dock-field.model-field, .dock-field.count-field, .duration-display, .duration-slider, .audio-toggle { width: 100%; }
   .price-summary { justify-items: start; }
   .generate-button { width: 100%; margin-left: 0; }
   .frame-inputs { grid-template-columns: 1fr; }
   .frame-inputs > svg { display: none; }
-  .video-result footer { align-items: flex-start; flex-direction: column; justify-content: center; padding-block: 8px; }
 }
 </style>

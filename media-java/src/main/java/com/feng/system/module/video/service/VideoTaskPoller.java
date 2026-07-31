@@ -15,7 +15,6 @@ import com.feng.system.module.media.entity.MediaTaskResult;
 import com.feng.system.module.media.mapper.MediaTaskMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.ResponseEntity;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
@@ -36,7 +35,6 @@ public class VideoTaskPoller {
     private final Sub2apiBillingService billing;
     private final MediaBillingRecordService mediaBilling;
     private final ImageModelConfigService modelConfigs;
-    private final VideoMaterialUploadService storage;
     private final MediaTaskResultService resultService;
     private final ObjectMapper json;
     @Value("${video.poll-max-duration-ms:7200000}") private long maxDuration = 7_200_000;
@@ -65,7 +63,7 @@ public class VideoTaskPoller {
             if (elapsed >= maxDuration) fail(task, "Video task timed out.", elapsed);
             else if ("FAILED".equals(upstream.status())) fail(task,
                     upstream.error() == null ? "Video task failed." : upstream.error(), elapsed);
-            else if ("COMPLETED".equals(upstream.status()) && !isOmni(runtime)
+            else if ("COMPLETED".equals(upstream.status())
                     && (upstream.resultUrl() == null || upstream.resultUrl().isBlank()))
                 fail(task, "Completed video task returned no result URL.", elapsed);
             else if ("COMPLETED".equals(upstream.status())) complete(task, upstream, runtime, elapsed);
@@ -75,27 +73,15 @@ public class VideoTaskPoller {
         }
     }
 
-    // 完成处理:omni 系列需从上游下载视频字节并落盘,其它模型直接使用上游结果 URL;随后结算费用并置为 SUCCEEDED
+    // 完成处理:直接保存上游结果 URL,随后结算费用并置为 SUCCEEDED
     private void complete(MediaTask task, VideoGateway.Task upstream,
                           ImageModelConfigService.RuntimeModel runtime, long elapsed) {
         MediaTaskResult result = resultService.find(task.getId(), 0);
         if (result == null) {
-            String publicUrl;
-            String mime = "video/mp4";
             Map<String, Object> metadata = new LinkedHashMap<>();
-            if (isOmni(runtime)) {
-                // omni 上游不提供结果 URL,需要主动下载内容并存到本地公开目录
-                ResponseEntity<byte[]> content = gateway.download(runtime.provider().getBaseUrl(),
-                        runtime.provider().getVideoApiKey(), runtime.model().getGenerationPath(), task.getUpstreamTaskId());
-                mime = content.getHeaders().getContentType() == null ? null : content.getHeaders().getContentType().toString();
-                VideoMaterialUploadService.Uploaded stored = storage.storeGenerated(task.getId(), content.getBody(), mime);
-                publicUrl = stored.url(); mime = stored.mimeType();
-                metadata.put("filePath", stored.filePath()); metadata.put("sizeBytes", stored.sizeBytes());
-            } else {
-                publicUrl = SafeUpstreamUrl.requirePublicHttps(upstream.resultUrl());
-            }
-            metadata.put("mimeType", mime);
-            resultService.saveIfAbsent(task.getId(), 0, publicUrl, metadata);
+            metadata.put("mimeType", "video/mp4");
+            resultService.saveIfAbsent(task.getId(), 0,
+                    SafeUpstreamUrl.requirePublicHttps(upstream.resultUrl()), metadata);
         }
         settleSuccess(task, runtime, elapsed);
         setUpstreamStatus(task, "completed");
@@ -165,9 +151,5 @@ public class VideoTaskPoller {
 
     private static String message(Exception error) {
         return error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
-    }
-
-    private static boolean isOmni(ImageModelConfigService.RuntimeModel runtime) {
-        return runtime.model().getModelKey() != null && runtime.model().getModelKey().startsWith("omni-");
     }
 }

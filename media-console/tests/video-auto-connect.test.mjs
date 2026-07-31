@@ -3,9 +3,9 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const source = await readFile(new URL("../src/VideoWorkbench.vue", import.meta.url), "utf8");
-const adminSource = await readFile(new URL("../../frontend/src/views/model/VideoModelView.vue", import.meta.url), "utf8");
-const migrationSource = await readFile(new URL("../../backend/src/main/resources/db/migration/V9__omni_video_models.sql", import.meta.url), "utf8");
-const v10MigrationSource = await readFile(new URL("../../backend/src/main/resources/db/migration/V10__omni_v2v_optional_references.sql", import.meta.url), "utf8").catch(() => "");
+const adminSource = await readFile(new URL("../../media-admin/src/views/model/VideoModelView.vue", import.meta.url), "utf8");
+const migrationSource = await readFile(new URL("../../media-java/src/main/resources/db/migration/V9__omni_video_models.sql", import.meta.url), "utf8");
+const v10MigrationSource = await readFile(new URL("../../media-java/src/main/resources/db/migration/V10__omni_v2v_optional_references.sql", import.meta.url), "utf8").catch(() => "");
 
 test("video workbench automatically connects without a connect button", () => {
   assert.doesNotMatch(source, />\s*连接\s*<\/button>/);
@@ -18,6 +18,12 @@ test("video duration uses a discrete range slider", () => {
   assert.match(source, /field\.key === ['"]duration['"][\s\S]*type="range"/);
   assert.match(source, /setDurationFromSlider/);
   assert.match(source, /numericOptions/);
+});
+
+test("omni duration shows fixed text without a slider", () => {
+  assert.match(source, /function isFixedDurationDisplay\(field: VideoModelParameter\)/);
+  assert.match(source, /v-if="isFixedDurationDisplay\(field\)" class="duration-display"[\s\S]*selectedDurationLabel\(field\)/);
+  assert.match(source, /v-else-if="field\.key === 'duration'" class="duration-slider"[\s\S]*type="range"/);
 });
 
 test("video duration defaults to the longest supported option", () => {
@@ -44,8 +50,23 @@ test("video history differentiates completed and failed jobs", () => {
   assert.match(source, /\.history-video-item\.failed/);
 });
 
+test("video history keeps a reuse-params action before delete", () => {
+  assert.match(source, /title="复用参数" @click="reuseHistoryParams\(job\)"/);
+  assert.match(source, /history-reuse/);
+  assert.match(source, /history-reuse[\s\S]*history-delete/);
+});
+
+test("video results follow the image workbench count layouts and loading states", () => {
+  assert.match(source, /const videoResultsLayoutClass = computed\(\(\) => \{[\s\S]*return "single"[\s\S]*return "double"[\s\S]*return "triple"[\s\S]*return "grid"/);
+  assert.match(source, /:class="\['video-results', `video-results-\$\{videoResultsLayoutClass\}`/);
+  assert.doesNotMatch(source, /<article v-for="job in jobs"[\s\S]*?<footer>/);
+  assert.match(source, /class="video-placeholder video-generating"[\s\S]*<i><\/i>/);
+  assert.match(source, /\.video-results-single[\s\S]*\.video-results-double[\s\S]*\.video-results-triple/);
+  assert.match(source, /@keyframes videoLoaderSweep[\s\S]*@keyframes videoLoaderTrack/);
+});
+
 test("video workbench uploads material files into url fields", () => {
-  assert.match(source, /api\.postForm<\{ url: string \}>\("\/api\/videos\/uploads"/);
+  assert.match(source, /api\.postForm<\{ url: string; publicUrl\?: string \}>\("\/api\/videos\/uploads"/);
   assert.match(source, /referenceVideos\.value\.map\(uploadMaterialFile\)/);
   assert.match(source, /referenceAudios\.value\.map\(uploadMaterialFile\)/);
   assert.match(source, /referenceVideoUrls: uploadedVideoUrls/);
@@ -106,6 +127,7 @@ test("video parameter controls leave room for omni labels and values", () => {
   assert.match(source, /\.creation-dock \{[^}]*width: min\(1240px, calc\(100% - 42px\)\)/s);
   assert.match(source, /\.dock-field \{ width: 150px;/);
   assert.match(source, /\.dock-field\.model-field \{ width: 220px;/);
+  assert.match(source, /\.duration-display \{ width: 128px;/);
   assert.match(source, /\.duration-slider \{ width: 190px;/);
 });
 

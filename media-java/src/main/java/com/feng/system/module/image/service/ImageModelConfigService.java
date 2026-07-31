@@ -336,9 +336,9 @@ public class ImageModelConfigService {
                  {"key":"resolution","label":"清晰度","type":"select","default":"720p","options":["480p","720p"]}]
                 """;
         String omniParams = """
-                [{"key":"duration","label":"Duration","type":"select","default":10,"options":[10]},
-                 {"key":"aspectRatio","label":"Aspect ratio","type":"select","default":"16:9","options":["16:9","9:16"]},
-                 {"key":"resolution","label":"Resolution","type":"select","default":"720p","options":["720p"]}]
+                [{"key":"duration","label":"视频时长","type":"select","default":10,"options":[{"label":"10秒左右","value":10}]},
+                 {"key":"aspectRatio","label":"画面比例","type":"select","default":"16:9","options":["16:9","9:16"]},
+                 {"key":"resolution","label":"清晰度","type":"select","default":"720p","options":["720p"]}]
                 """;
         switch (model.getModelKey() == null ? "" : model.getModelKey()) {
             case "seedance-2.0", "seedance-2.0-fast", "seedance-2.0-mini" -> {

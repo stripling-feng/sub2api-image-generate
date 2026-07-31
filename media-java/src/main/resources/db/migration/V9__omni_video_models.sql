@@ -15,7 +15,7 @@ INSERT INTO ai_models(provider_id, model_type, model_key, display_name, upstream
                       default_params, unit_price_usd, billing_mode, enabled, model_sort)
 SELECT provider.id, 'VIDEO', seed.model_key, seed.display_name, seed.model_key, '/v1/videos',
        1, 4, seed.max_images, 0,
-       '[{"key":"duration","label":"Duration","type":"select","default":10,"options":[10]},{"key":"aspectRatio","label":"Aspect ratio","type":"select","default":"16:9","options":["16:9","9:16"]},{"key":"resolution","label":"Resolution","type":"select","default":"720p","options":["720p"]}]'::jsonb,
+       '[{"key":"duration","label":"视频时长","type":"select","default":10,"options":[{"label":"10秒左右","value":10}]},{"key":"aspectRatio","label":"画面比例","type":"select","default":"16:9","options":["16:9","9:16"]},{"key":"resolution","label":"清晰度","type":"select","default":"720p","options":["720p"]}]'::jsonb,
        seed.default_params::jsonb, 0, 'PER_REQUEST', 0, seed.model_sort
 FROM provider
 CROSS JOIN (VALUES

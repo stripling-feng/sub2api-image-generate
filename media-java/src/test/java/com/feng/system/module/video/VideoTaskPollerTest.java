@@ -11,26 +11,17 @@ import com.feng.system.module.media.mapper.MediaTaskMapper;
 import com.feng.system.module.media.service.MediaBillingRecordService;
 import com.feng.system.module.media.service.MediaTaskResultService;
 import com.feng.system.module.video.service.VideoGateway;
-import com.feng.system.module.video.service.VideoMaterialUploadService;
 import com.feng.system.module.video.service.VideoTaskPoller;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
-import org.springframework.http.MediaType;
-import org.springframework.http.ResponseEntity;
 
 import java.math.BigDecimal;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 class VideoTaskPollerTest {
-    @TempDir Path uploads;
-
     @Test
     void pendingTaskKeepsFirstUpstreamResponseOnly() {
         MediaTaskMapper tasks = mock(MediaTaskMapper.class);
@@ -39,7 +30,7 @@ class VideoTaskPollerTest {
                 new VideoGateway.Task("upstream-1", "PENDING", 10, null, null, Map.of()));
         VideoTaskPoller poller = poller(tasks, gateway, mock(Sub2apiBillingService.class),
                 mock(MediaBillingRecordService.class), configured("seedance-2.0"),
-                mock(VideoMaterialUploadService.class), mock(MediaTaskResultService.class));
+                mock(MediaTaskResultService.class));
 
         poller.process(task("job-pending", 8));
 
@@ -57,8 +48,7 @@ class VideoTaskPollerTest {
                         502, "failed", null, Map.of("error", "poll rejected")));
         ImageModelConfigService configs = configured("seedance-2.0");
         VideoTaskPoller poller = poller(tasks, gateway, mock(Sub2apiBillingService.class),
-                mock(MediaBillingRecordService.class), configs, mock(VideoMaterialUploadService.class),
-                mock(MediaTaskResultService.class));
+                mock(MediaBillingRecordService.class), configs, mock(MediaTaskResultService.class));
         MediaTask task = task("job-error", 10);
 
         poller.process(task);
@@ -68,21 +58,18 @@ class VideoTaskPollerTest {
     }
 
     @Test
-    void omniCompletionDownloadsLocallyBeforeSettling() throws Exception {
+    void omniCompletionStoresUpstreamUrlWithoutDownloadingOrUploading() {
         MediaTaskMapper tasks = mock(MediaTaskMapper.class);
-        VideoGateway gateway = mock(VideoGateway.class, invocation -> switch (invocation.getMethod().getName()) {
-            case "query" -> new VideoGateway.Task("upstream-1", "COMPLETED", 100, null, null, Map.of());
-            case "download" -> ResponseEntity.ok().contentType(MediaType.parseMediaType("video/mp4"))
-                    .body(new byte[] {0, 0, 0, 24, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'});
-            default -> RETURNS_DEFAULTS.answer(invocation);
-        });
+        VideoGateway gateway = mock(VideoGateway.class);
+        String upstreamUrl = "https://tmp.cangyuansuanli.cn/gen-videos/122/upstream-1.mp4";
+        when(gateway.query(anyString(), anyString(), anyString(), anyString())).thenReturn(
+                new VideoGateway.Task("upstream-1", "COMPLETED", 100, upstreamUrl, null, Map.of()));
         Sub2apiBillingService billing = mock(Sub2apiBillingService.class);
         MediaBillingRecordService mediaBilling = mock(MediaBillingRecordService.class);
         when(mediaBilling.find("job-1")).thenReturn(reservation("job-1", BigDecimal.ZERO));
         ImageModelConfigService configs = configured("omni-fast");
-        VideoMaterialUploadService storage = new VideoMaterialUploadService(uploads.toString(), "https://media.example.com");
         MediaTaskResultService results = mock(MediaTaskResultService.class);
-        VideoTaskPoller poller = poller(tasks, gateway, billing, mediaBilling, configs, storage, results);
+        VideoTaskPoller poller = poller(tasks, gateway, billing, mediaBilling, configs, results);
         when(billing.settleVideo(anyString(), anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString(), anyInt()))
                 .thenReturn("usage-1");
         MediaTask task = task("job-1", 10);
@@ -90,9 +77,8 @@ class VideoTaskPollerTest {
 
         poller.process(task);
 
-        verify(results).saveIfAbsent(eq("job-1"), eq(0),
-                eq("https://media.example.com/uploads/generated-videos/job-1.mp4"), anyMap());
-        assertTrue(Files.exists(uploads.resolve("generated-videos/job-1.mp4")));
+        verify(results).saveIfAbsent(eq("job-1"), eq(0), eq(upstreamUrl), anyMap());
+        verify(gateway, never()).download(anyString(), anyString(), anyString(), anyString());
         verify(billing).settleVideo(anyString(), anyString(), anyString(), anyString(), any(),
                 eq("omni-fast"), eq("omni-fast"), eq("/v1/videos"), eq(10));
         verify(mediaBilling).charged("job-1", "usage-1");
@@ -107,7 +93,7 @@ class VideoTaskPollerTest {
         MediaTaskResultService results = mock(MediaTaskResultService.class);
         ImageModelConfigService configs = configured("seedance-2.0");
         VideoTaskPoller poller = poller(tasks, gateway, billing, mediaBilling, configs,
-                mock(VideoMaterialUploadService.class), results);
+                results);
         when(gateway.query(anyString(), anyString(), anyString(), anyString())).thenReturn(
                 new VideoGateway.Task("upstream-1", "COMPLETED", 100,
                         "https://example.com/video.mp4", null, Map.of("status", "completed")));
@@ -134,7 +120,7 @@ class VideoTaskPollerTest {
         MediaBillingRecordService mediaBilling = mock(MediaBillingRecordService.class);
         ImageModelConfigService configs = configured("seedance-2.0");
         VideoTaskPoller poller = poller(tasks, gateway, billing, mediaBilling, configs,
-                mock(VideoMaterialUploadService.class), mock(MediaTaskResultService.class));
+                mock(MediaTaskResultService.class));
         when(gateway.query(anyString(), anyString(), anyString(), anyString()))
                 .thenReturn(new VideoGateway.Task("task", "COMPLETED", 100, null, null, Map.of()));
         when(mediaBilling.find("job-2")).thenReturn(reservation("job-2", BigDecimal.ONE));
@@ -150,8 +136,8 @@ class VideoTaskPollerTest {
 
     private VideoTaskPoller poller(MediaTaskMapper tasks, VideoGateway gateway, Sub2apiBillingService billing,
                                    MediaBillingRecordService mediaBilling, ImageModelConfigService configs,
-                                   VideoMaterialUploadService storage, MediaTaskResultService results) {
-        return new VideoTaskPoller(tasks, gateway, billing, mediaBilling, configs, storage, results, new ObjectMapper());
+                                   MediaTaskResultService results) {
+        return new VideoTaskPoller(tasks, gateway, billing, mediaBilling, configs, results, new ObjectMapper());
     }
 
     private ImageModelConfigService configured(String modelKey) {
